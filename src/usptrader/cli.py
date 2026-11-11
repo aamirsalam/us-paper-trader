@@ -1,4 +1,4 @@
-"""usptrader <phase> [--dry-run] [--date YYYY-MM-DD]
+"""usptrader <command> [--date YYYY-MM-DD]
 
 usptrader premarket            decide today's targets
 usptrader trade                place guarded orders
