@@ -1,0 +1,16 @@
+# Copy to terraform.tfvars (git-ignored) and adjust.
+alert_email = "you@example.com"
+
+# Leave false for the first apply. Turn on after secrets are set and a manual run passes.
+schedules_enabled = false
+
+# GitHub OIDC provider: there can only be one per account. If the NSE stack already
+# created it, paste its ARN here; otherwise set create_github_oidc_provider = true.
+github_oidc_provider_arn    = ""
+create_github_oidc_provider = false
+
+# Optional: plug in your real bank's FX markup and per-remittance charges.
+app_env = {
+  FX_SPREAD_PCT      = "0.0075"
+  REMITTANCE_FEE_INR = "0"
+}

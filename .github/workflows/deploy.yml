@@ -1,0 +1,49 @@
+name: deploy
+
+# Builds the arm64 image and moves the `live` tag in ECR. The scheduled tasks always
+# run `:live`, so there's nothing else to roll. Uses OIDC: no AWS keys stored in GitHub.
+# Repository variables needed: AWS_DEPLOY_ROLE_ARN (terraform output), AWS_REGION.
+
+on:
+  push:
+    branches: [main]
+    paths: ["src/**", "pyproject.toml", "Dockerfile"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+jobs:
+  image:
+    if: vars.AWS_DEPLOY_ROLE_ARN != ''
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -e ".[dev]" && pytest -q
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION || 'ap-southeast-2' }}
+      - id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/arm64
+          push: true
+          provenance: false
+          tags: |
+            ${{ steps.ecr.outputs.registry }}/us-paper-trader:${{ github.sha }}
+            ${{ steps.ecr.outputs.registry }}/us-paper-trader:live
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

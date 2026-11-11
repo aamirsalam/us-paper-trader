@@ -1,0 +1,7 @@
+# Copy to backend.hcl (git-ignored). Reuse the NSE stack's state bucket if you like:
+# the separate key keeps the two states fully independent.
+bucket       = "YOUR-TF-STATE-BUCKET"
+key          = "us-paper-trader/prod/terraform.tfstate"
+region       = "ap-southeast-2"
+encrypt      = true
+use_lockfile = true
