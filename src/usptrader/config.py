@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 
 from .costs import CostModel
 
-DEFAULT_MODES = ("baseline", "conservative", "balanced")
+DEFAULT_MODES = ("baseline", "conservative", "balanced", "aggressive")
 
 
 def _f(name: str, default: float) -> float:

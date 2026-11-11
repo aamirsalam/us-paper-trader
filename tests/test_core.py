@@ -183,3 +183,56 @@ def test_balanced_parks_in_tbills_when_nothing_trends():
     falling = list(reversed(_rising()))
     r = Balanced().decide({s: falling for s in Balanced.candidates}, D, {})
     assert r.targets == {"SGOV": 1.0}
+
+
+# ---- aggressive -----------------------------------------------------------------------------------
+from usptrader.strategies import Aggressive  # noqa: E402
+
+
+def _closes_for_aggressive(fast=("NVDA", "SMH", "AVGO"), voo_step=0.001):
+    closes = {s: _rising(step=0.0005) for s in Aggressive.candidates}
+    for i, s in enumerate(fast):
+        closes[s] = _rising(step=0.004 - i * 0.0005)
+    closes["VOO"] = _rising(step=voo_step)
+    return closes
+
+
+def test_aggressive_picks_top3_including_single_stocks():
+    r = Aggressive().decide(_closes_for_aggressive(), D, {})
+    assert set(r.targets) == {"NVDA", "SMH", "AVGO"}
+    assert sum(r.targets.values()) == pytest.approx(1)
+    assert r.state["period"] == "2026-11-a"
+
+
+def test_aggressive_market_brake_limits_to_one_pick():
+    closes = _closes_for_aggressive()
+    closes["VOO"] = list(reversed(_rising()))
+    r = Aggressive().decide(closes, D, {})
+    assert r.targets["NVDA"] == pytest.approx(1 / 3)
+    assert r.targets["SGOV"] == pytest.approx(2 / 3)
+    assert "brake" in r.note
+
+
+def test_aggressive_rebalances_twice_a_month_and_holds_between():
+    first = Aggressive().decide(_closes_for_aggressive(), D, {})
+    same_period = Aggressive().decide(_closes_for_aggressive(), date(2026, 11, 13), first.state)
+    assert same_period.targets == first.targets and "holding" in same_period.note
+    new_period = Aggressive().decide(
+        _closes_for_aggressive(fast=("META", "XLK", "TSLA")), date(2026, 11, 16), first.state
+    )
+    assert set(new_period.targets) == {"META", "XLK", "TSLA"}
+
+
+def test_aggressive_protective_exit_below_50d():
+    first = Aggressive().decide(_closes_for_aggressive(), D, {})
+    closes = _closes_for_aggressive()
+    closes["NVDA"] = closes["NVDA"][:-1] + [closes["NVDA"][-60] * 0.9]  # sharp drop below 50d avg
+    r = Aggressive().decide(closes, date(2026, 11, 12), first.state)
+    assert "NVDA" not in r.targets and r.targets["SGOV"] == pytest.approx(1 / 3)
+    assert "NVDA" not in r.state["picks"]
+
+
+def test_aggressive_never_picks_leveraged_products():
+    from usptrader.compliance import LEVERAGED_OR_INVERSE
+
+    assert not set(Aggressive.universe) & LEVERAGED_OR_INVERSE

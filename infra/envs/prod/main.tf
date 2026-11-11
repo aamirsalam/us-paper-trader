@@ -54,7 +54,7 @@ variable "vpc_cidr" {
 
 variable "modes" {
   type    = list(string)
-  default = ["baseline", "conservative", "balanced"]
+  default = ["baseline", "conservative", "balanced", "aggressive"]
 }
 
 variable "schedules_enabled" {

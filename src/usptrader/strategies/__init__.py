@@ -82,7 +82,82 @@ class Balanced(Strategy):
         return StrategyResult(targets, {"month": month, "targets": targets}, note)
 
 
-REGISTRY: dict[str, type[Strategy]] = {s.name: s for s in (Baseline, Conservative, Balanced)}
+class Aggressive(Strategy):
+    """A notch above balanced: faster, more concentrated momentum that can hold mega-cap stocks.
+
+    Twice a month (1st and 16th): score ETFs and mega-caps on a 50/50 blend of 3- and
+    6-month return, keep those above their 100-day average, hold the top 3 equal weight.
+    Market brake: when VOO is below its 200-day average, hold at most 1 pick.
+    Protective exit: between rebalances, a pick that closes below its 50-day average is
+    sold to SGOV and stays out until the next rebalance.
+    No leverage, no shorts: still inside what LRS allows.
+    """
+
+    name = "aggressive"
+    candidates = (
+        "QQQ", "SMH", "XLK", "XLC", "XLY", "XLF", "XLE", "XLI", "XLV", "IWM",
+        "AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "AVGO", "TSLA", "JPM", "LLY",
+    )  # fmt: skip
+    universe = (*candidates, "VOO", CASH_PROXY)
+    lookback_days = 260
+    top_n = 3
+    drift_threshold = 0.04
+
+    @staticmethod
+    def period(day) -> str:
+        return f"{day:%Y-%m}-{'a' if day.day <= 15 else 'b'}"
+
+    def _score(self, series: list[float]) -> float | None:
+        r3, r6, avg = total_return(series, 63), total_return(series, 126), sma(series, 100)
+        if r3 is None or r6 is None or avg is None or series[-1] <= avg:
+            return None
+        score = 0.5 * r3 + 0.5 * r6
+        return score if score > 0 else None
+
+    def _targets(self, picks: list[str]) -> dict[str, float]:
+        slot = 1 / self.top_n
+        targets = {sym: slot for sym in picks}
+        if len(picks) < self.top_n:
+            targets[CASH_PROXY] = round(1 - slot * len(picks), 10)
+        return targets
+
+    def decide(self, closes, today, prev_state):
+        period = self.period(today)
+        if prev_state.get("period") == period and prev_state.get("picks") is not None:
+            picks = list(prev_state["picks"])
+            stopped = []
+            for sym in picks:
+                series = closes.get(sym, [])
+                avg50 = sma(series, 50)
+                if avg50 is not None and series[-1] < avg50:
+                    stopped.append(sym)
+            if not stopped:
+                return StrategyResult(self._targets(picks), dict(prev_state), "holding this period's picks")
+            kept = [s for s in picks if s not in stopped]
+            state = {**prev_state, "picks": kept}
+            return StrategyResult(
+                self._targets(kept), state, "protective exit (below 50d avg): " + ", ".join(stopped)
+            )
+
+        voo = closes.get("VOO", [])
+        voo_avg = sma(voo, 200)
+        risk_on = voo_avg is None or voo[-1] > voo_avg
+        scored = []
+        for sym in self.candidates:
+            s = self._score(closes.get(sym, []))
+            if s is not None:
+                scored.append((s, sym))
+        limit = self.top_n if risk_on else 1
+        picks = [sym for _, sym in sorted(scored, reverse=True)[:limit]]
+        note = (
+            ("" if risk_on else "market brake on (VOO < 200d), ")
+            + "picks: "
+            + (", ".join(picks) if picks else "none, all T-bills")
+        )
+        return StrategyResult(self._targets(picks), {"period": period, "picks": picks}, note)
+
+
+REGISTRY: dict[str, type[Strategy]] = {s.name: s for s in (Baseline, Conservative, Balanced, Aggressive)}
 
 
 def get(name: str) -> Strategy:

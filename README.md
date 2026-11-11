@@ -38,9 +38,11 @@ EventBridge Scheduler (America/New_York, Mon–Fri)
 | `baseline` | Buy and hold VOO. Everything else has to beat this after costs. |
 | `conservative` | VOO 60% / SGOV 40% above VOO's 200-day average, 100% SGOV below it (±2% hysteresis band). |
 | `balanced` | Monthly: top 3 of 12 broad/sector ETFs by 6-month return that are also above their 200-day average; empty slots go to SGOV. |
+| `aggressive` | A notch above balanced. Twice a month (1st/16th): top 3 of 20 ETFs **and mega-cap stocks** (NVDA, MSFT, AAPL…) on a 3+6-month momentum blend, above their 100-day average. Market brake: max 1 pick while VOO is below its 200-day average. Protective exit: a pick closing below its 50-day average goes to SGOV until the next rebalance. Still unleveraged, so LRS-compliant. |
 
 SGOV (T-bill ETF) is used as "cash" so idle money still earns the T-bill yield, as it would for real.
-The aggressive mode (AI-checked momentum) comes later.
+Expect `aggressive` to trade far more (and so pay more in fees and settlement delays) and to swing
+harder; the report's max-drawdown column is the honest place to judge it.
 
 ## Isolation from the NSE stack (same AWS account)
 
@@ -74,7 +76,8 @@ Don't enable AWS Organizations or IAM Identity Center for this: on the Free plan
 ## Setup (once, from your laptop)
 
 1. **Alpaca**: sign up (paper-only works from India), then in the dashboard create one paper account
-   per mode with a **$1,000** balance and generate API keys for each.
+   per mode (four: baseline, conservative, balanced, aggressive) with a **$1,000** balance each and
+   generate API keys for each.
 2. **Email**: a Gmail app password for the sending account (Google Account → Security → App passwords).
 3. **Terraform**
    ```bash

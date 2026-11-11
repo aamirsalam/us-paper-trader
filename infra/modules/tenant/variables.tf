@@ -13,7 +13,7 @@ variable "vpc_cidr" {
 variable "modes" {
   description = "Trading modes; each one is a separate $1,000 Alpaca paper account."
   type        = list(string)
-  default     = ["baseline", "conservative", "balanced"]
+  default     = ["baseline", "conservative", "balanced", "aggressive"]
 }
 
 variable "image_tag" {
