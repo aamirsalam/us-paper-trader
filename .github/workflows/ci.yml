@@ -23,6 +23,8 @@ jobs:
       - run: pytest -q
       - name: 30-day offline simulation
         run: LOCAL_LEDGER_DIR=$RUNNER_TEMP/ledger usptrader simulate --days 30
+      - name: synthetic backtest smoke test
+        run: usptrader backtest --source synthetic --start 2024-01-02 --end 2025-12-31
 
   terraform:
     runs-on: ubuntu-latest

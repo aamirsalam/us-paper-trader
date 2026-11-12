@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
-# Start one phase on Fargate right now (same task the schedules run) and tail its logs.
+# Start one command on Fargate right now (same task the schedules run) and print its logs.
 #   ./scripts/run-phase.sh premarket|trade|postclose|report
+#   ./scripts/run-phase.sh resume --mode aggressive
 set -euo pipefail
 
-PHASE="${1:?usage: run-phase.sh premarket|trade|postclose|report}"
+[[ $# -ge 1 ]] || { echo "usage: run-phase.sh <command> [args...]" >&2; exit 2; }
+COMMAND_JSON=$(printf '%s\n' "$@" | jq -R . | jq -sc .)
 REGION="${AWS_REGION:-ap-southeast-2}"
 NAME="us-paper-trader"
 cd "$(dirname "$0")/../infra/envs/prod"
@@ -14,7 +16,7 @@ SG=$(terraform output -json tenant | jq -r '.task_security_group_id')
 TASK_ARN=$(aws ecs run-task --region "$REGION" --cluster "$NAME" --task-definition "$NAME" \
   --launch-type FARGATE --count 1 \
   --network-configuration "awsvpcConfiguration={subnets=[$SUBNETS],securityGroups=[$SG],assignPublicIp=ENABLED}" \
-  --overrides "{\"containerOverrides\":[{\"name\":\"trader\",\"command\":[\"$PHASE\"]}]}" \
+  --overrides "{\"containerOverrides\":[{\"name\":\"trader\",\"command\":$COMMAND_JSON}]}" \
   --query 'tasks[0].taskArn' --output text)
 
 echo "started $TASK_ARN"

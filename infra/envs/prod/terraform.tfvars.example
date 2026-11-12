@@ -13,4 +13,9 @@ create_github_oidc_provider = false
 app_env = {
   FX_SPREAD_PCT      = "0.0075"
   REMITTANCE_FEE_INR = "0"
+  # SEC asks for a contact; used as the earnings-date fallback when Nasdaq's calendar is down.
+  SEC_USER_AGENT = "Your Name you@example.com"
+  # Loss-limit overrides (fractions, or "off"). Defaults are in strategies/__init__.py.
+  # RISK_AGGRESSIVE_DRAWDOWN = "0.20"
+  # RISK_AGGRESSIVE_HALT_DAYS = "20"
 }

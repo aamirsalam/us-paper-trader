@@ -7,9 +7,11 @@ import smtplib
 from datetime import date
 from email.message import EmailMessage
 
+from . import strategies
 from .config import Settings
 from .costs import indian_fy
 from .ledger import Ledger, LedgerStore
+from .risk import limits_from_env, status_line
 from .runner import ModeOutcome
 
 log = logging.getLogger(__name__)
@@ -61,6 +63,7 @@ def build_report(
 ) -> tuple[str, str]:
     metrics = [m for m in (mode_metrics(Ledger(x, store, settings.costs)) for x in settings.modes) if m]
     base = next((m for m in metrics if m["mode"] == "baseline"), None)
+    halted: list[str] = []
 
     lines = [f"US paper trader, {today:%a %d %b %Y} (ET)", ""]
     if metrics:
@@ -86,6 +89,15 @@ def build_report(
                 f"    {m['trades']} fills, {m['blocked']} orders blocked by LRS guard, dividends "
                 f"${m['div_gross']:.2f} gross / ${m['div_withheld']:.2f} withheld"
             )
+            mode_limits = limits_from_env(m["mode"], strategies.get(m["mode"]).limits)
+            led = Ledger(m["mode"], store, settings.costs)
+            risk_line = status_line(led, mode_limits, today)
+            lines.append("    " + risk_line)
+            if risk_line.startswith("⛔"):
+                halted.append(m["mode"])
+            earn = sum(1 for e in led.of_type("rejection") if e["reason"].startswith("earnings"))
+            if earn:
+                lines.append(f"    {earn} buys held back by the earnings blackout so far")
             for mm in m["mismatches"]:
                 lines.append(f"    ⚠ broker mismatch {mm}")
     lines += ["", "Today:"]
@@ -114,6 +126,8 @@ def build_report(
         subject = f"US paper {today:%d %b}: " + " | ".join(bits)
     else:
         subject = f"US paper {today:%d %b}: no snapshots yet"
+    if halted:
+        subject = f"⛔ {', '.join(halted)} halted · " + subject
     if any(not o.ok for o in outcomes):
         subject = "⚠ " + subject
     return subject, "\n".join(lines)

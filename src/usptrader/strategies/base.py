@@ -5,6 +5,8 @@ from dataclasses import dataclass, field
 from datetime import date
 from typing import Any
 
+from ..risk import NO_LIMITS, RiskLimits
+
 
 @dataclass
 class StrategyResult:
@@ -13,16 +15,30 @@ class StrategyResult:
     note: str = ""
 
 
+@dataclass(frozen=True)
+class StrategyContext:
+    """Facts the runner knows that the price history doesn't."""
+
+    blackout: frozenset[str] = frozenset()  # single stocks near earnings: don't buy
+    exit_now: frozenset[str] = frozenset()  # single stocks reporting today/tomorrow: get out
+
+
 class Strategy(ABC):
     name: str
     universe: tuple[str, ...]
+    single_stocks: tuple[str, ...] = ()  # names in the universe that report earnings
     lookback_days: int = 260
     drift_threshold: float = 0.05
     min_trade: float = 1.0
+    limits: RiskLimits = NO_LIMITS
 
     @abstractmethod
     def decide(
-        self, closes: dict[str, list[float]], today: date, prev_state: dict[str, Any]
+        self,
+        closes: dict[str, list[float]],
+        today: date,
+        prev_state: dict[str, Any],
+        context: StrategyContext | None = None,
     ) -> StrategyResult: ...
 
 

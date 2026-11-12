@@ -49,6 +49,19 @@ class LocalStore:
         return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
 
 
+class MemoryStore:
+    """In-process store for backtests."""
+
+    def __init__(self) -> None:
+        self._data: dict[str, list[dict[str, Any]]] = defaultdict(list)
+
+    def append(self, mode: str, entry: dict[str, Any]) -> None:
+        self._data[mode].append(entry)
+
+    def load(self, mode: str) -> list[dict[str, Any]]:
+        return list(self._data[mode])
+
+
 class DynamoStore:
     """DynamoDB table with pk=mode, sk=<epoch_ns>#<uuid>."""
 
@@ -104,12 +117,21 @@ class Ledger:
         self.mode = mode
         self.store = store
         self.costs = costs
-        self.entries: list[dict[str, Any]] = store.load(mode)
+        self.entries: list[dict[str, Any]] = []
+        self._by_type: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        self._pos_cache: tuple[int, dict[str, Position]] | None = None
+        self._cash_cache: tuple[int, float] | None = None
+        for entry in store.load(mode):
+            self._index(entry)
+
+    def _index(self, entry: dict[str, Any]) -> None:
+        self.entries.append(entry)
+        self._by_type[entry["type"]].append(entry)
 
     # ---- writes -------------------------------------------------------------------------------
     def _add(self, entry: dict[str, Any]) -> dict[str, Any]:
         self.store.append(self.mode, entry)
-        self.entries.append(entry)
+        self._index(entry)
         return entry
 
     def record_deposit(self, on: date, usd: float, mid_rate: float) -> dict[str, Any]:
@@ -128,8 +150,22 @@ class Ledger:
             }
         )
 
-    def record_plan(self, on: date, targets: dict[str, float], state: dict[str, Any]) -> dict[str, Any]:
-        return self._add({"type": "plan", "date": on.isoformat(), "targets": targets, "state": state})
+    def record_plan(
+        self,
+        on: date,
+        targets: dict[str, float],
+        state: dict[str, Any],
+        meta: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """`state` is the strategy's own memory; `meta` is runner context (earnings, notes)."""
+        entry = {"type": "plan", "date": on.isoformat(), "targets": targets, "state": state}
+        if meta:
+            entry["meta"] = meta
+        return self._add(entry)
+
+    def record_risk(self, on: date, action: str, **values: Any) -> dict[str, Any]:
+        """action: halt | resume | pause"""
+        return self._add({"type": "risk", "date": on.isoformat(), "action": action, **values})
 
     def record_order(self, on: date, order_id: str, intent: OrderIntent) -> dict[str, Any]:
         return self._add(
@@ -206,11 +242,18 @@ class Ledger:
 
     # ---- reads --------------------------------------------------------------------------------
     def of_type(self, kind: str) -> list[dict[str, Any]]:
-        return [e for e in self.entries if e["type"] == kind]
+        """Entries of one type, oldest first. Treat as read-only."""
+        return self._by_type.get(kind, [])
 
     def on(self, kind: str, day: date) -> list[dict[str, Any]]:
         d = day.isoformat()
-        return [e for e in self.entries if e["type"] == kind and e["date"] == d]
+        out = []
+        for e in reversed(self.of_type(kind)):  # entries are chronological: stop once we're past `day`
+            if e["date"] == d:
+                out.append(e)
+            elif e["date"] < d:
+                break
+        return out[::-1]
 
     def has_fill(self, order_id: str) -> bool:
         return any(e.get("order_id") == order_id for e in self.of_type("fill"))
@@ -229,6 +272,15 @@ class Ledger:
 
     def positions(self, as_of: date | None = None) -> dict[str, Position]:
         """Open positions from fills dated on or before `as_of` (all fills if None)."""
+        n = len(self.of_type("fill"))
+        if as_of is None and self._pos_cache and self._pos_cache[0] == n:
+            return {s: Position(p.qty, p.cost) for s, p in self._pos_cache[1].items()}
+        result = self._positions(as_of)
+        if as_of is None:
+            self._pos_cache = (n, {s: Position(p.qty, p.cost) for s, p in result.items()})
+        return result
+
+    def _positions(self, as_of: date | None) -> dict[str, Position]:
         pos: dict[str, Position] = defaultdict(Position)
         for e in self.of_type("fill"):
             if as_of and date.fromisoformat(e["date"]) > as_of:
@@ -246,6 +298,14 @@ class Ledger:
         return {s: p for s, p in pos.items() if p.qty > EPS}
 
     def cash(self) -> float:
+        key = len(self.entries)
+        if self._cash_cache and self._cash_cache[0] == key:
+            return self._cash_cache[1]
+        value = self._cash()
+        self._cash_cache = (key, value)
+        return value
+
+    def _cash(self) -> float:
         total = sum(e["usd"] for e in self.of_type("deposit"))
         for e in self.of_type("fill"):
             gross = e["qty"] * e["price"]

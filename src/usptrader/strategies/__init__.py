@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from .base import Strategy, StrategyResult, sma, total_return
+from ..risk import RiskLimits
+from .base import Strategy, StrategyContext, StrategyResult, sma, total_return
 
 CASH_PROXY = "SGOV"  # 0-3 month US Treasury bill ETF: "cash" that still earns T-bill yield
 
@@ -16,7 +17,7 @@ class Baseline(Strategy):
     drift_threshold = 0.0
     min_trade = 5.0
 
-    def decide(self, closes, today, prev_state):
+    def decide(self, closes, today, prev_state, context=None):
         return StrategyResult({"VOO": 1.0}, note="buy and hold")
 
 
@@ -29,10 +30,11 @@ class Conservative(Strategy):
 
     name = "conservative"
     universe = ("VOO", CASH_PROXY)
+    limits = RiskLimits(weekly_loss=0.03, max_drawdown=0.12)
     lookback_days = 260
     band = 0.02
 
-    def decide(self, closes, today, prev_state):
+    def decide(self, closes, today, prev_state, context=None):
         voo = closes.get("VOO", [])
         avg = sma(voo, 200)
         regime = prev_state.get("regime", "on")
@@ -62,8 +64,9 @@ class Balanced(Strategy):
     universe = (*candidates, CASH_PROXY)
     lookback_days = 260
     top_n = 3
+    limits = RiskLimits(weekly_loss=0.04, max_drawdown=0.15)
 
-    def decide(self, closes, today, prev_state):
+    def decide(self, closes, today, prev_state, context=None):
         month = today.strftime("%Y-%m")
         if prev_state.get("month") == month and prev_state.get("targets"):
             return StrategyResult(dict(prev_state["targets"]), dict(prev_state), "holding this month's picks")
@@ -90,18 +93,21 @@ class Aggressive(Strategy):
     Market brake: when VOO is below its 200-day average, hold at most 1 pick.
     Protective exit: between rebalances, a pick that closes below its 50-day average is
     sold to SGOV and stays out until the next rebalance.
+    Earnings: single stocks reporting within the blackout window aren't picked or added
+    to, and a held stock that reports today or tomorrow is sold first (re-eligible at the
+    next rebalance). ETFs are unaffected.
     No leverage, no shorts: still inside what LRS allows.
     """
 
     name = "aggressive"
-    candidates = (
-        "QQQ", "SMH", "XLK", "XLC", "XLY", "XLF", "XLE", "XLI", "XLV", "IWM",
-        "AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "AVGO", "TSLA", "JPM", "LLY",
-    )  # fmt: skip
+    etfs = ("QQQ", "SMH", "XLK", "XLC", "XLY", "XLF", "XLE", "XLI", "XLV", "IWM")
+    single_stocks = ("AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "AVGO", "TSLA", "JPM", "LLY")
+    candidates = (*etfs, *single_stocks)
     universe = (*candidates, "VOO", CASH_PROXY)
     lookback_days = 260
     top_n = 3
     drift_threshold = 0.04
+    limits = RiskLimits(weekly_loss=0.06, max_drawdown=0.20, max_single_stock=0.40)
 
     @staticmethod
     def period(day) -> str:
@@ -121,32 +127,43 @@ class Aggressive(Strategy):
             targets[CASH_PROXY] = round(1 - slot * len(picks), 10)
         return targets
 
-    def decide(self, closes, today, prev_state):
+    def decide(self, closes, today, prev_state, context=None):
+        ctx = context or StrategyContext()
         period = self.period(today)
         if prev_state.get("period") == period and prev_state.get("picks") is not None:
             picks = list(prev_state["picks"])
-            stopped = []
+            stopped, earnings = [], []
             for sym in picks:
                 series = closes.get(sym, [])
                 avg50 = sma(series, 50)
-                if avg50 is not None and series[-1] < avg50:
+                if sym in ctx.exit_now:
+                    earnings.append(sym)
+                elif avg50 is not None and series[-1] < avg50:
                     stopped.append(sym)
-            if not stopped:
+            if not stopped and not earnings:
                 return StrategyResult(self._targets(picks), dict(prev_state), "holding this period's picks")
-            kept = [s for s in picks if s not in stopped]
+            kept = [s for s in picks if s not in stopped and s not in earnings]
             state = {**prev_state, "picks": kept}
-            return StrategyResult(
-                self._targets(kept), state, "protective exit (below 50d avg): " + ", ".join(stopped)
-            )
+            notes = []
+            if stopped:
+                notes.append("protective exit (below 50d avg): " + ", ".join(stopped))
+            if earnings:
+                notes.append("out before earnings: " + ", ".join(earnings))
+            return StrategyResult(self._targets(kept), state, "; ".join(notes))
 
         voo = closes.get("VOO", [])
         voo_avg = sma(voo, 200)
         risk_on = voo_avg is None or voo[-1] > voo_avg
         scored = []
+        skipped = []
         for sym in self.candidates:
             s = self._score(closes.get(sym, []))
-            if s is not None:
-                scored.append((s, sym))
+            if s is None:
+                continue
+            if sym in ctx.blackout:
+                skipped.append(sym)
+                continue
+            scored.append((s, sym))
         limit = self.top_n if risk_on else 1
         picks = [sym for _, sym in sorted(scored, reverse=True)[:limit]]
         note = (
@@ -154,6 +171,8 @@ class Aggressive(Strategy):
             + "picks: "
             + (", ".join(picks) if picks else "none, all T-bills")
         )
+        if skipped:
+            note += "; skipped for earnings: " + ", ".join(skipped)
         return StrategyResult(self._targets(picks), {"period": period, "picks": picks}, note)
 
 
@@ -167,4 +186,4 @@ def get(name: str) -> Strategy:
         raise ValueError(f"unknown mode {name!r}; known: {sorted(REGISTRY)}") from exc
 
 
-__all__ = ["Strategy", "StrategyResult", "get", "REGISTRY", "CASH_PROXY"]
+__all__ = ["Strategy", "StrategyContext", "StrategyResult", "get", "REGISTRY", "CASH_PROXY"]

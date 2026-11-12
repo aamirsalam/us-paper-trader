@@ -38,11 +38,72 @@ EventBridge Scheduler (America/New_York, Mon–Fri)
 | `baseline` | Buy and hold VOO. Everything else has to beat this after costs. |
 | `conservative` | VOO 60% / SGOV 40% above VOO's 200-day average, 100% SGOV below it (±2% hysteresis band). |
 | `balanced` | Monthly: top 3 of 12 broad/sector ETFs by 6-month return that are also above their 200-day average; empty slots go to SGOV. |
-| `aggressive` | A notch above balanced. Twice a month (1st/16th): top 3 of 20 ETFs **and mega-cap stocks** (NVDA, MSFT, AAPL…) on a 3+6-month momentum blend, above their 100-day average. Market brake: max 1 pick while VOO is below its 200-day average. Protective exit: a pick closing below its 50-day average goes to SGOV until the next rebalance. Still unleveraged, so LRS-compliant. |
+| `aggressive` | A notch above balanced (see the backtest caveat below). Twice a month (1st/16th): top 3 of 20 ETFs **and mega-cap stocks** (NVDA, MSFT, AAPL…) on a 3+6-month momentum blend, above their 100-day average. Market brake: max 1 pick while VOO is below its 200-day average. Protective exit: a pick closing below its 50-day average goes to SGOV until the next rebalance. Still unleveraged, so LRS-compliant. |
 
 SGOV (T-bill ETF) is used as "cash" so idle money still earns the T-bill yield, as it would for real.
 Expect `aggressive` to trade far more (and so pay more in fees and settlement delays) and to swing
 harder; the report's max-drawdown column is the honest place to judge it.
+
+## Earnings blackout (aggressive mode)
+
+Single stocks gap overnight on earnings; ETFs don't report. So for the ten stocks in `aggressive`:
+
+- **No buys** (new picks or top-ups) if the company reports within the next **5 trading days**.
+- **Exit first** if a held stock reports **today or tomorrow** (confirmed date); it's eligible again
+  at the next rebalance.
+- **Fail safe**: if no earnings source answers, no new single-stock buys that day; holdings untouched.
+
+Dates come from Nasdaq's public earnings calendar (keyless). If that's down and `SEC_USER_AGENT` is
+set, the next date is projected from the company's SEC 8-K Item 2.02 history (a fuzzier ±1 week window
+that blocks buys but never forces an exit). Backtests use the actual SEC filing dates.
+
+## Loss limits
+
+Checked at every trade phase with live prices. Sells and parking cash in SGOV are never blocked.
+
+| Mode | Weekly loss → pause new buys for the week | Drawdown from peak → halt to T-bills | Single stock cap |
+|---|---|---|---|
+| baseline | — | — | — |
+| conservative | 3% | 12% | — |
+| balanced | 4% | 15% | — |
+| aggressive | 6% | 20% | 40% of equity |
+
+A halt lifts itself after 20 trading days with the peak reset (`RISK_<MODE>_HALT_DAYS=0` makes it
+manual-only). Lift it early with `./scripts/run-phase.sh resume --mode aggressive`. The email subject
+starts with ⛔ while any mode is halted. Override any limit with `RISK_<MODE>_WEEKLY`, `_DRAWDOWN`,
+`_SINGLE` (fraction or `off`) in `app_env`.
+
+## Backtest
+
+```bash
+usptrader backtest --start 2016-01-04 --out ./data/backtest      # Yahoo daily bars, cached in ./data/cache
+usptrader backtest --no-limits                                   # compare without loss limits
+SEC_USER_AGENT="Your Name you@example.com" usptrader backtest    # include the earnings blackout
+```
+
+It replays the **real** trader day by day (same strategies, LRS guard, loss limits, ledger and cost
+model): decisions on yesterday's close, fills at today's open plus 5 bps, T+1 settlement, dividends
+paid 14 days after ex-date net of 25% withholding, FX spread in and out at the historical USD/INR rate.
+SGOV history before its 2020 launch is spliced from BIL.
+
+**Results, 2016-01-04 → 2026-11-11** ($1,000 per mode, limits on, earnings blackout off):
+
+| Mode | CAGR USD | CAGR INR | Max drawdown | Return/vol |
+|---|---|---|---|---|
+| baseline (VOO) | 14.3% | 17.8% | -34.0% | 0.81 |
+| conservative | 6.8% | 10.1% | -13.8% | 0.91 |
+| balanced | 9.9% | 13.2% | -19.2% | 0.66 |
+| aggressive | 24.8% | 28.6% | -27.6% | 1.08 |
+| *aggressive, ETFs only* | *7.9%* | *11.2%* | *-15.0%* | *0.58* |
+
+How to read it:
+- **Buy-and-hold won.** Every rules-based mode trails VOO on return; conservative and balanced buy a
+  smaller worst-case drop with it.
+- **Aggressive's number is mostly hindsight.** Its stock list is today's winners. With only its ETFs
+  the same rules make 7.9%. Treat the 24.8% as an upper bound; the paper run is the honest test.
+- **Loss limits are insurance, not alpha.** Turning them off adds 0.2–0.8% a year; they cut balanced's
+  worst drawdown from -24% to -19% and barely change the others.
+- About 3.5 points of the INR return is the rupee weakening (66 → 88), not the strategy.
 
 ## Isolation from the NSE stack (same AWS account)
 
@@ -114,6 +175,9 @@ the ledger defaults to `./data/ledger/*.jsonl`.
 src/usptrader/
   runner.py       phases; idempotent, one failing mode doesn't stop the others
   compliance.py   LRS guard
+  risk.py         weekly pause, drawdown halt, single-stock cap
+  earnings.py     Nasdaq calendar, SEC 8-K 2.02 history, fail-safe chain
+  backtest.py     day-by-day replay of the real trader; marketdata.py fetches and caches Yahoo
   costs.py        Indian-investor cost model
   ledger.py       append-only ledger (DynamoDB or local JSONL), positions, T+1 settled cash
   rebalance.py    targets -> orders, sells first, drift band

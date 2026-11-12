@@ -18,13 +18,18 @@ from . import strategies
 from .broker.base import Broker
 from .compliance import ComplianceGuard
 from .config import Settings
+from .earnings import EarningsCalendar, live_calendar
 from .fx import usd_inr
-from .ledger import Ledger, LedgerStore
+from .ledger import EPS, Ledger, LedgerStore
+from .models import OrderIntent
 from .rebalance import plan_orders
+from .risk import NO_LIMITS, RiskLimits, RiskState, assess, limits_from_env
+from .strategies import CASH_PROXY, StrategyContext
 
 log = logging.getLogger(__name__)
 ET = ZoneInfo("America/New_York")
 PHASES = ("premarket", "trade", "postclose")
+BLACKOUT_TRADING_DAYS = 5  # no single-stock buys if it reports within this many trading days
 
 
 def today_et() -> date:
@@ -50,6 +55,8 @@ class Trader:
         today: date | None = None,
         rate_fn: Callable[[], tuple[float, str]] | None = None,
         fill_wait_seconds: int = 90,
+        earnings: EarningsCalendar | None = None,
+        limits_enabled: bool = True,
     ) -> None:
         self.settings = settings
         self.broker_for = broker_for
@@ -58,7 +65,31 @@ class Trader:
         self.rate_fn = rate_fn or (lambda: usd_inr(settings.fallback_usdinr))
         self.fill_wait_seconds = fill_wait_seconds
         self.guard = ComplianceGuard()
+        self.limits_enabled = limits_enabled
+        self._earnings = earnings
         self._rate: tuple[float, str] | None = None
+        self._ledgers: dict[str, Ledger] = {}
+
+    def set_day(self, day: date) -> None:
+        """Move to another trading date (backtests reuse one Trader for speed)."""
+        self.today = day
+        self._rate = None
+
+    @property
+    def earnings(self) -> EarningsCalendar:
+        if self._earnings is None:
+            self._earnings = live_calendar()
+        return self._earnings
+
+    def ledger(self, mode: str) -> Ledger:
+        if mode not in self._ledgers:
+            self._ledgers[mode] = Ledger(mode, self.store, self.settings.costs)
+        return self._ledgers[mode]
+
+    def limits(self, strategy) -> RiskLimits:
+        if not self.limits_enabled:
+            return NO_LIMITS
+        return limits_from_env(strategy.name, strategy.limits)
 
     def rate(self) -> tuple[float, str]:
         if self._rate is None:
@@ -78,7 +109,7 @@ class Trader:
                     out.lines.append(f"{self.today} is not a US trading day, nothing to do")
                     outcomes.append(out)
                     continue
-                ledger = Ledger(mode, self.store, self.settings.costs)
+                ledger = self.ledger(mode)
                 strategy = strategies.get(mode)
                 self._ensure_funded(ledger, broker, out)
                 getattr(self, f"_{phase}")(ledger, broker, strategy, out)
@@ -107,10 +138,39 @@ class Trader:
             return
         closes = broker.daily_closes(list(strategy.universe), strategy.lookback_days)
         prev = ledger.latest_plan()
-        result = strategy.decide(closes, self.today, prev["state"] if prev else {})
-        ledger.record_plan(self.today, result.targets, {**result.state, "note": result.note})
+        context, meta = self._earnings_context(ledger, broker, strategy, out)
+        result = strategy.decide(closes, self.today, prev["state"] if prev else {}, context)
+        ledger.record_plan(self.today, result.targets, result.state, {**meta, "note": result.note})
         weights = ", ".join(f"{s} {w:.0%}" for s, w in sorted(result.targets.items()))
         out.lines.append(f"plan: {weights} ({result.note})")
+
+    def _earnings_context(self, ledger, broker, strategy, out) -> tuple[StrategyContext, dict]:
+        singles = sorted(set(strategy.single_stocks))
+        if not singles:
+            return StrategyContext(), {}
+        end = self.today
+        for _ in range(BLACKOUT_TRADING_DAYS):
+            end = broker.next_trading_day(end)
+        tomorrow = broker.next_trading_day(self.today)
+        try:
+            events = self.earnings.upcoming(singles, self.today, end)
+        except Exception as exc:  # noqa: BLE001  fail safe: no new single-stock buys today
+            out.lines.append(f"earnings dates unavailable ({exc}); no new single-stock buys today")
+            return StrategyContext(blackout=frozenset(singles)), {
+                "earnings_blackout": singles,
+                "earnings_reason": {s: "earnings dates unavailable" for s in singles},
+                "earnings_source": "unknown",
+            }
+        blackout = sorted(events)
+        exit_now = sorted(s for s, e in events.items() if e.confirmed and e.day <= tomorrow)
+        reasons = {
+            s: f"reports {e.day:%a %d %b}{'' if e.confirmed else ' (estimated)'}" for s, e in events.items()
+        }
+        if blackout:
+            out.lines.append("earnings blackout: " + ", ".join(f"{s} {reasons[s]}" for s in blackout))
+        source = getattr(self.earnings, "source", type(self.earnings).__name__)
+        meta = {"earnings_blackout": blackout, "earnings_reason": reasons, "earnings_source": source}
+        return StrategyContext(frozenset(blackout), frozenset(exit_now)), meta
 
     def _trade(self, ledger, broker, strategy, out) -> None:
         self._sync_orders(ledger, broker, out)
@@ -121,12 +181,24 @@ class Trader:
         if not plans:
             self._premarket(ledger, broker, strategy, out)
             plans = ledger.on("plan", self.today)
-        targets = plans[-1]["targets"]
+        plan = plans[-1]
+        targets = plan["targets"]
+        meta = plan.get("meta", {})
 
         positions = ledger.positions()
-        symbols = sorted(set(targets) | set(positions))
+        symbols = sorted(set(targets) | set(positions) | {CASH_PROXY})
         prices = broker.latest_prices(symbols)
         equity = ledger.cash() + sum(p.qty * prices.get(s, 0) for s, p in positions.items())
+
+        limits = self.limits(strategy)
+        risk = assess(ledger, equity, self.today, limits)
+        out.lines.extend(risk.events or [])
+        if risk.halted:
+            targets = {CASH_PROXY: 1.0}
+            out.lines.append(f"risk halt in force, holding T-bills only: {risk.reason}")
+        elif risk.paused:
+            out.lines.append(f"weekly loss pause, no new risk buys: {risk.reason}")
+
         intents = plan_orders(
             targets,
             positions,
@@ -142,6 +214,11 @@ class Trader:
         available = min(ledger.settled_cash(self.today), broker.cash_available())
         placed: list[str] = []
         for intent in intents:
+            intent, why = self._risk_gate(intent, strategy, limits, risk, meta, positions, prices, equity)
+            if intent is None:
+                ledger.record_rejection(self.today, why[0], why[1])
+                out.lines.append(f"blocked {why[0].side} {why[0].symbol}: {why[1]}")
+                continue
             decision = self.guard.check(intent, positions=positions, available_cash=available)
             if not decision.approved:
                 ledger.record_rejection(self.today, intent, decision.reason)
@@ -199,6 +276,37 @@ class Trader:
         out.lines.extend(f"RECON {m}" for m in mismatches)
 
     # ---- helpers ------------------------------------------------------------------------------
+    @staticmethod
+    def _risk_gate(
+        intent: OrderIntent,
+        strategy,
+        limits: RiskLimits,
+        risk: RiskState,
+        meta: dict,
+        positions: dict,
+        prices: dict[str, float],
+        equity: float,
+    ) -> tuple[OrderIntent | None, tuple[OrderIntent, str] | None]:
+        """Loss limits and earnings blackout. Sells always pass: getting out must stay possible."""
+        if intent.side == "sell" or intent.symbol == CASH_PROXY:
+            return intent, None
+        if risk.paused or risk.halted:
+            return None, (intent, f"loss limit: {risk.reason}")
+        if intent.symbol in set(meta.get("earnings_blackout", [])):
+            reason = meta.get("earnings_reason", {}).get(intent.symbol, "near earnings")
+            return None, (intent, f"earnings blackout ({reason})")
+        cap = limits.max_single_stock
+        if cap is not None and intent.symbol in strategy.single_stocks and intent.notional:
+            held = positions.get(intent.symbol)
+            current = held.qty * prices.get(intent.symbol, 0) if held and held.qty > EPS else 0.0
+            room = cap * equity - current
+            if room < 1:
+                return None, (intent, f"single-stock cap {cap:.0%} of equity reached")
+            if intent.notional > room:
+                notional = int(room * 100) / 100
+                return OrderIntent(intent.symbol, "buy", notional=notional, reason=intent.reason), None
+        return intent, None
+
     def _sync_orders(self, ledger: Ledger, broker: Broker, out: ModeOutcome, quiet: bool = False) -> None:
         for order in ledger.open_orders():
             status, fill = broker.order_fill(order["order_id"])
