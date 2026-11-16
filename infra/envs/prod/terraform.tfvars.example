@@ -1,5 +1,10 @@
 # Copy to terraform.tfvars (git-ignored) and adjust.
+# Budget alerts and "a run failed" alerts go here. AWS sends a confirmation email first: click it.
 alert_email = "you@example.com"
+
+# SEC asks for a contact. Needed from day one: Nasdaq's calendar often refuses cloud servers,
+# and without this fallback the aggressive mode can't buy single stocks.
+sec_user_agent = "Your Name you@example.com"
 
 # Leave false for the first apply. Turn on after secrets are set and a manual run passes.
 schedules_enabled = false
@@ -13,8 +18,8 @@ create_github_oidc_provider = false
 app_env = {
   FX_SPREAD_PCT      = "0.0075"
   REMITTANCE_FEE_INR = "0"
-  # SEC asks for a contact; used as the earnings-date fallback when Nasdaq's calendar is down.
-  SEC_USER_AGENT = "Your Name you@example.com"
+  # Your marginal income-tax rate, for the after-tax column (default 0.30).
+  # TAX_SLAB_RATE = "0.30"
   # Loss-limit overrides (fractions, or "off"). Defaults are in strategies/__init__.py.
   # RISK_AGGRESSIVE_DRAWDOWN = "0.20"
   # RISK_AGGRESSIVE_HALT_DAYS = "20"

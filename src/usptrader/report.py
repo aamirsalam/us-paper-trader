@@ -13,6 +13,7 @@ from .costs import indian_fy
 from .ledger import Ledger, LedgerStore
 from .risk import limits_from_env, status_line
 from .runner import ModeOutcome
+from .tax import TaxModel, after_tax
 
 log = logging.getLogger(__name__)
 
@@ -59,9 +60,22 @@ def mode_metrics(ledger: Ledger) -> dict | None:
 
 
 def build_report(
-    settings: Settings, store: LedgerStore, today: date, outcomes: list[ModeOutcome]
+    settings: Settings,
+    store: LedgerStore,
+    today: date,
+    outcomes: list[ModeOutcome],
+    ledgers: dict[str, Ledger] | None = None,
 ) -> tuple[str, str]:
-    metrics = [m for m in (mode_metrics(Ledger(x, store, settings.costs)) for x in settings.modes) if m]
+    # Each ledger is read from the database once and reused for every section below.
+    ledgers = ledgers or {m: Ledger(m, store, settings.costs) for m in settings.modes}
+    tax_model = TaxModel.from_env()
+    metrics = []
+    for mode in settings.modes:
+        m = mode_metrics(ledgers[mode])
+        if m:
+            m["tax"] = after_tax(ledgers[mode], tax_model, today)
+            m["kept_pct"] = m["tax"].value_inr / m["inr_in"] - 1 if m["tax"] and m["inr_in"] else 0.0
+            metrics.append(m)
     base = next((m for m in metrics if m["mode"] == "baseline"), None)
     halted: list[str] = []
 
@@ -69,35 +83,58 @@ def build_report(
     if metrics:
         lines.append(f"USD/INR {metrics[0]['rate']:.2f}  ·  running {max(m['days'] for m in metrics)} days")
         lines.append("")
-        lines.append(f"{'mode':<13}{'equity $':>10}{'USD %':>8}{'INR %':>8}{'vs base':>9}{'max DD':>8}")
+        lines.append(
+            f"{'mode':<13}{'equity $':>10}{'USD %':>8}{'INR %':>8}{'after tax %':>13}"
+            f"{'vs base':>9}{'max DD':>8}"
+        )
         for m in metrics:
-            vs = f"{(m['pnl_inr_pct'] - base['pnl_inr_pct']) * 100:+.1f}" if base and m is not base else "—"
+            vs = f"{(m['kept_pct'] - base['kept_pct']) * 100:+.1f}" if base and m is not base else "—"
             lines.append(
                 f"{m['mode']:<13}{m['equity_usd']:>10,.2f}{m['pnl_pct'] * 100:>+8.1f}"
-                f"{m['pnl_inr_pct'] * 100:>+8.1f}{vs:>9}{m['max_dd'] * 100:>8.1f}"
+                f"{m['pnl_inr_pct'] * 100:>+8.1f}{m['kept_pct'] * 100:>+13.1f}{vs:>9}"
+                f"{m['max_dd'] * 100:>8.1f}"
             )
+        lines.append(
+            f"after tax = sold and brought home today, Indian tax at a {tax_model.slab_rate:.0%} slab "
+            f"(+{tax_model.cess:.0%} cess); vs base compares that column"
+        )
         lines.append("")
         for m in metrics:
+            led = ledgers[m["mode"]]
             lines.append(
                 f"[{m['mode']}] ₹{m['inr_in']:,.0f} in → ₹{m['inr_back']:,.0f} if withdrawn today "
                 f"(strategy ₹{m['strategy_inr']:+,.0f}, rupee ₹{m['fx_inr']:+,.0f}, "
                 f"bank FX ₹{m['friction_inr']:+,.0f})"
             )
+            t = m["tax"]
+            if t:
+                lines.append(
+                    f"    after tax ₹{t.value_inr:,.0f}: tax ₹{t.tax_total_inr:,.0f} "
+                    f"(past years ₹{t.tax_paid_inr:,.0f}, this year so far ₹{t.tax_accrued_inr:,.0f}, "
+                    f"on selling now ₹{t.tax_on_exit_inr:,.0f}); realised gains short-term "
+                    f"₹{t.stcg_inr:+,.0f}, long-term ₹{t.ltcg_inr:+,.0f}"
+                )
             held = ", ".join(f"{s} ${v:,.0f}" for s, v in sorted(m["holdings"].items())) or "none"
             lines.append(f"    holdings: {held}; cash ${m['cash']:,.2f}")
             lines.append(
-                f"    {m['trades']} fills, {m['blocked']} orders blocked by LRS guard, dividends "
+                f"    {m['trades']} fills, {m['blocked']} orders blocked or rejected, dividends "
                 f"${m['div_gross']:.2f} gross / ${m['div_withheld']:.2f} withheld"
             )
             mode_limits = limits_from_env(m["mode"], strategies.get(m["mode"]).limits)
-            led = Ledger(m["mode"], store, settings.costs)
             risk_line = status_line(led, mode_limits, today)
             lines.append("    " + risk_line)
             if risk_line.startswith("⛔"):
                 halted.append(m["mode"])
+            plan = led.latest_plan()
+            source = (plan or {}).get("meta", {}).get("earnings_source")
+            if source:
+                flag = "⚠ " if source == "unknown" else ""
+                lines.append(f"    {flag}earnings dates from: {source}")
             earn = sum(1 for e in led.of_type("rejection") if e["reason"].startswith("earnings"))
             if earn:
                 lines.append(f"    {earn} buys held back by the earnings blackout so far")
+            if m["mode"] in settings.virtual_modes:
+                lines.append("    ledger-only mode: fills simulated at market price, no broker account")
             for mm in m["mismatches"]:
                 lines.append(f"    ⚠ broker mismatch {mm}")
     lines += ["", "Today:"]
@@ -106,17 +143,13 @@ def build_report(
         lines.append(f"  [{o.mode}] {status}")
         lines.extend(f"     - {x}" for x in o.lines)
 
-    total_inr = 0.0
     fy = indian_fy(today)
-    for mode in settings.modes:
-        total_inr += sum(
-            e["inr"] for e in Ledger(mode, store, settings.costs).of_type("deposit") if e["fy"] == fy
-        )
+    total_inr = sum(e["inr"] for led in ledgers.values() for e in led.of_type("deposit") if e["fy"] == fy)
     lines += [
         "",
         f"If this were real: {fy} LRS remittances ₹{total_inr:,.0f} of the ₹10,00,000 TCS-free limit. "
-        "Report foreign holdings in Schedule FA.",
-        "Paper results. Not investment advice.",
+        "Report foreign holdings in Schedule FA; claim the US dividend tax with Form 67.",
+        "Paper results. Tax figures are estimates, not advice: confirm with a CA.",
     ]
 
     if metrics:

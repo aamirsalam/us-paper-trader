@@ -81,6 +81,9 @@ class Trader:
             self._earnings = live_calendar()
         return self._earnings
 
+    def ledgers(self) -> dict[str, Ledger]:
+        return {m: self.ledger(m) for m in self.settings.modes}
+
     def ledger(self, mode: str) -> Ledger:
         if mode not in self._ledgers:
             self._ledgers[mode] = Ledger(mode, self.store, self.settings.costs)
@@ -123,9 +126,13 @@ class Trader:
     def _ensure_funded(self, ledger: Ledger, broker: Broker, out: ModeOutcome) -> None:
         if ledger.of_type("deposit"):
             return
-        changed = broker.lock_down_account()
-        if changed:
-            out.lines.append("broker account locked to cash-only: " + ", ".join(changed))
+        try:  # a refused setting must not stop the mode: our own guard enforces the same rules
+            changed = broker.lock_down_account()
+            if changed:
+                out.lines.append("broker account locked to cash-only: " + ", ".join(changed))
+        except Exception as exc:  # noqa: BLE001
+            log.warning("%s: could not apply cash-only settings at the broker: %s", ledger.mode, exc)
+            out.lines.append(f"⚠ broker refused cash-only settings ({exc}); relying on the LRS guard")
         rate, src = self.rate()
         dep = ledger.record_deposit(self.today, self.settings.starting_capital_usd, rate)
         out.lines.append(
@@ -155,7 +162,10 @@ class Trader:
         try:
             events = self.earnings.upcoming(singles, self.today, end)
         except Exception as exc:  # noqa: BLE001  fail safe: no new single-stock buys today
-            out.lines.append(f"earnings dates unavailable ({exc}); no new single-stock buys today")
+            out.lines.append(
+                f"⚠ earnings dates unavailable ({exc}); no new single-stock buys today. "
+                "Set SEC_USER_AGENT to enable the SEC fallback."
+            )
             return StrategyContext(blackout=frozenset(singles)), {
                 "earnings_blackout": singles,
                 "earnings_reason": {s: "earnings dates unavailable" for s in singles},
@@ -226,7 +236,13 @@ class Trader:
                 continue
             order = decision.intent
             cid = f"{ledger.mode}-{self.today:%Y%m%d}-{order.symbol}-{order.side}"
-            oid = broker.submit(order, cid)
+            try:  # one refused order must not cancel the rest of the day's orders
+                oid = broker.submit(order, cid)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("%s: broker rejected %s %s: %s", ledger.mode, order.side, order.symbol, exc)
+                ledger.record_rejection(self.today, order, f"broker rejected: {exc}"[:300])
+                out.lines.append(f"⚠ broker rejected {order.side} {order.symbol}: {exc}")
+                continue
             ledger.record_order(self.today, oid, order)
             if order.side == "buy":
                 available -= order.notional
@@ -253,13 +269,15 @@ class Trader:
         equity = cash + sum(mkt.values())
         rate, src = self.rate()
 
-        broker_pos = broker.positions()
-        ours = {s: p.qty for s, p in positions.items()}
-        mismatches = [
-            f"{s}: ledger {ours.get(s, 0):.6f} vs broker {broker_pos.get(s, 0):.6f}"
-            for s in sorted(set(ours) | set(broker_pos))
-            if abs(ours.get(s, 0) - broker_pos.get(s, 0)) > 1e-4
-        ]
+        mismatches: list[str] = []
+        if getattr(broker, "reconciles", True):
+            broker_pos = broker.positions()
+            ours = {s: p.qty for s, p in positions.items()}
+            mismatches = [
+                f"{s}: ledger {ours.get(s, 0):.6f} vs broker {broker_pos.get(s, 0):.6f}"
+                for s in sorted(set(ours) | set(broker_pos))
+                if abs(ours.get(s, 0) - broker_pos.get(s, 0)) > 1e-4
+            ]
         if not ledger.on("snapshot", self.today):
             ledger.record_snapshot(
                 self.today,
@@ -311,7 +329,7 @@ class Trader:
         for order in ledger.open_orders():
             status, fill = broker.order_fill(order["order_id"])
             if fill and status in ("filled", "dead"):
-                ledger.record_fill(fill, broker.next_trading_day(fill.filled_on))
+                ledger.record_fill(fill, broker.next_trading_day(fill.filled_on), self.rate()[0])
                 if not quiet:
                     out.lines.append(f"filled {fill.side} {fill.symbol} {fill.qty:.4f} @ ${fill.price:,.2f}")
             if status == "dead":
@@ -329,7 +347,9 @@ class Trader:
             qty = ledger.positions(as_of=div.ex_date - timedelta(days=1)).get(div.symbol)
             if not qty:
                 continue
-            entry = ledger.record_dividend(div.action_id, div.symbol, qty.qty, div.rate, div.payable_date)
+            entry = ledger.record_dividend(
+                div.action_id, div.symbol, qty.qty, div.rate, div.payable_date, self.rate()[0]
+            )
             if entry:
                 out.lines.append(
                     f"dividend {div.symbol}: ${entry['gross']:.2f} gross, "

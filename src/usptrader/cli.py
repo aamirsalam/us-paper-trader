@@ -32,11 +32,19 @@ def _store(settings: Settings) -> LedgerStore:
 
 def _alpaca_factory(settings: Settings):
     from .broker.alpaca_paper import AlpacaPaperBroker
+    from .broker.virtual import VirtualBroker
 
     cache: dict = {}
 
     def make(mode: str):
-        if mode not in cache:
+        if mode in cache:
+            return cache[mode]
+        if mode in settings.virtual_modes:
+            real = settings.broker_modes()
+            if not real:
+                raise RuntimeError("every mode is virtual: one broker-backed mode is needed for market data")
+            cache[mode] = VirtualBroker(make(real[0]))
+        else:
             cache[mode] = AlpacaPaperBroker(*settings.alpaca_keys(mode))
         return cache[mode]
 
@@ -160,16 +168,17 @@ def main(argv: list[str] | None = None) -> int:
         print(f"{args.mode}: halt lifted, drawdown peak reset to ${ref:,.2f}")
         return 0
 
-    outcomes = []
+    outcomes, ledgers = [], None
     if args.command in PHASES:
         trader = Trader(settings, _alpaca_factory(settings), store, today=today)
         outcomes = trader.run(args.command)
+        ledgers = trader.ledgers()  # reuse what this run already loaded: one database read per mode
         for o in outcomes:
             logging.info(
                 "[%s/%s] %s %s", o.mode, o.phase, "ok" if o.ok else "FAILED " + o.error, " | ".join(o.lines)
             )
     if args.command in ("postclose", "report"):
-        subject, body = build_report(settings, store, today, outcomes)
+        subject, body = build_report(settings, store, today, outcomes, ledgers)
         send(settings, subject, body)
     return 0 if all(o.ok for o in outcomes) else 1
 

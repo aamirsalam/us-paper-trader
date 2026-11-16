@@ -23,6 +23,7 @@ from .earnings import EarningsCalendar, NoEarnings
 from .ledger import Ledger, MemoryStore
 from .marketdata import MarketData
 from .runner import Trader
+from .tax import TaxModel, after_tax, month_end_before
 
 
 @dataclass
@@ -47,6 +48,11 @@ class ModeStats:
     pauses: int
     earnings_blocks: int
     earnings_exits: int
+    after_tax_inr: float = 0.0  # kept after Indian tax, sold and brought home at the end
+    cagr_after_tax: float = 0.0
+    tax_inr: float = 0.0
+    stcg_inr: float = 0.0
+    ltcg_inr: float = 0.0
     traded: list[str] = field(default_factory=list)
     curve: list[tuple[date, float, float]] = field(repr=False, default_factory=list)
 
@@ -68,6 +74,7 @@ def run_backtest(
     slippage_bps: float = 5.0,
     limits_enabled: bool = True,
     earnings: EarningsCalendar | None = None,
+    tax_model: TaxModel | None = None,
     progress=None,
 ) -> BacktestResult:
     store = MemoryStore()
@@ -104,9 +111,15 @@ def run_backtest(
         if progress and n % 250 == 0:
             progress(day)
 
-    stats = [summarise(trader.ledger(m)) for m in settings.modes]
+    tax_model = tax_model or TaxModel.from_env()
+    rate_for = month_end_before(lambda d: data.rate(d, settings.fallback_usdinr))
+    stats = [summarise(trader.ledger(m), tax_model, rate_for) for m in settings.modes]
     caveats = [
         "Paper results on history. Past returns, especially from momentum, don't repeat on schedule.",
+        f"After-tax figures assume a {tax_model.slab_rate:.0%} slab (+{tax_model.cess:.0%} cess) on "
+        f"short-term gains and dividends, {tax_model.ltcg_rate:.1%} on gains held over "
+        f"{tax_model.lt_months} months, each year's tax paid out of the portfolio, and everything "
+        "sold at the end. Set TAX_SLAB_RATE to your own rate. Estimates, not tax advice.",
         f"Fills at the next open with {slippage_bps:g} bps slippage; live orders go in at ~10:05 ET.",
     ]
     if "aggressive" in settings.modes:
@@ -130,13 +143,18 @@ def run_backtest(
         data.calendar[0],
         data.calendar[-1],
         stats,
-        {"slippage_bps": slippage_bps, "limits": limits_enabled, "capital": settings.starting_capital_usd},
+        {
+            "slippage_bps": slippage_bps,
+            "limits": limits_enabled,
+            "capital": settings.starting_capital_usd,
+            "slab": tax_model.slab_rate,
+        },
         caveats,
         failures,
     )
 
 
-def summarise(ledger: Ledger) -> ModeStats:
+def summarise(ledger: Ledger, tax_model: TaxModel | None = None, rate_for=None) -> ModeStats:
     snaps = ledger.of_type("snapshot")
     start_usd, inr_in = ledger.deposited_usd(), ledger.deposited_inr()
     curve = [(date.fromisoformat(s["date"]), s["equity_usd"], s["inr_if_withdrawn"]) for s in snaps]
@@ -178,7 +196,14 @@ def summarise(ledger: Ledger) -> ModeStats:
         elif e["type"] == "snapshot" and halted:
             halted_days += 1
     plans = ledger.of_type("plan")
+    kept = after_tax(ledger, tax_model or TaxModel(), curve[-1][0], rate_for) if curve else None
+    kept_inr = kept.value_inr if kept else inr_out
     return ModeStats(
+        after_tax_inr=kept_inr,
+        cagr_after_tax=(kept_inr / inr_in) ** (1 / years_n) - 1 if inr_in and kept_inr > 0 else 0.0,
+        tax_inr=kept.tax_total_inr if kept else 0.0,
+        stcg_inr=kept.stcg_inr if kept else 0.0,
+        ltcg_inr=kept.ltcg_inr if kept else 0.0,
         mode=ledger.mode,
         start_usd=start_usd,
         end_usd=end_usd,
@@ -211,14 +236,24 @@ def format_result(r: BacktestResult) -> str:
         f"slippage {r.settings['slippage_bps']:g} bps  ·  "
         f"loss limits {'on' if r.settings['limits'] else 'off'}",
         "",
-        f"{'mode':<13}{'end $':>10}{'CAGR $':>8}{'CAGR ₹':>8}{'vs base':>8}{'max DD':>8}"
-        f"{'vol':>7}{'ret/vol':>8}{'fills':>7}",
+        f"{'mode':<13}{'end $':>10}{'CAGR $':>8}{'CAGR ₹':>8}{'₹ after tax':>12}{'vs base':>8}"
+        f"{'max DD':>8}{'vol':>7}{'ret/vol':>8}{'fills':>7}",
     ]
     for s in r.stats:
-        vs = f"{(s.cagr_inr - base.cagr_inr) * 100:+.1f}" if base and s is not base else "—"
+        vs = f"{(s.cagr_after_tax - base.cagr_after_tax) * 100:+.1f}" if base and s is not base else "—"
         lines.append(
-            f"{s.mode:<13}{s.end_usd:>10,.0f}{s.cagr_usd * 100:>+8.1f}{s.cagr_inr * 100:>+8.1f}{vs:>8}"
+            f"{s.mode:<13}{s.end_usd:>10,.0f}{s.cagr_usd * 100:>+8.1f}{s.cagr_inr * 100:>+8.1f}"
+            f"{s.cagr_after_tax * 100:>+12.1f}{vs:>8}"
             f"{s.max_dd * 100:>8.1f}{s.vol * 100:>7.1f}{s.ret_over_vol:>8.2f}{s.fills:>7}"
+        )
+    lines += ["", f"Indian tax (slab {r.settings.get('slab', 0.30):.0%}, vs base = after-tax CAGR gap):"]
+    for s in r.stats:
+        share = s.tax_inr / (s.inr_out - s.inr_in) if s.inr_out > s.inr_in else 0.0
+        lost = max(0.0, s.inr_out - s.after_tax_inr - s.tax_inr)
+        lines.append(
+            f"  {s.mode:<12} ₹{s.inr_out:,.0f} before tax → ₹{s.after_tax_inr:,.0f} kept · "
+            f"tax ₹{s.tax_inr:,.0f} ({share:.0%} of the gain) + ₹{lost:,.0f} growth lost on tax paid "
+            f"along the way · realised short-term ₹{s.stcg_inr:+,.0f}, long-term ₹{s.ltcg_inr:+,.0f}"
         )
     years = sorted({y for s in r.stats for y in s.years})
     lines += ["", "Calendar-year returns (USD, %):", f"{'mode':<13}" + "".join(f"{y:>7}" for y in years)]

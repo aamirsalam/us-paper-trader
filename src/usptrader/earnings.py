@@ -54,7 +54,7 @@ class NoEarnings:
         return {}
 
 
-def _get_json(url: str, headers: dict[str, str], timeout: int = 15):
+def _get_json(url: str, headers: dict[str, str], timeout: int = 8):
     req = urllib.request.Request(url, headers=headers)
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         return json.load(resp)

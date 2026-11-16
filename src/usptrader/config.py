@@ -18,6 +18,8 @@ def _f(name: str, default: float) -> float:
 @dataclass(frozen=True)
 class Settings:
     modes: tuple[str, ...] = DEFAULT_MODES
+    # Modes kept on our own ledger with no broker account (Alpaca allows 3 paper accounts per login).
+    virtual_modes: tuple[str, ...] = ("baseline",)
     starting_capital_usd: float = 1000.0
     ledger_backend: str = "local"  # "local" | "dynamodb"
     ledger_table: str = "us-paper-trader-ledger"
@@ -43,8 +45,10 @@ class Settings:
             tcs_rate=_f("TCS_RATE", CostModel.tcs_rate),
             tcs_threshold_inr=_f("TCS_THRESHOLD_INR", CostModel.tcs_threshold_inr),
         )
+        virtual = tuple(m.strip() for m in e("VIRTUAL_MODES", "baseline").split(",") if m.strip())
         return cls(
             modes=modes,
+            virtual_modes=tuple(m for m in virtual if m in modes),
             starting_capital_usd=_f("STARTING_CAPITAL_USD", 1000.0),
             ledger_backend=e("LEDGER_BACKEND", "local"),
             ledger_table=e("LEDGER_TABLE", "us-paper-trader-ledger"),
@@ -59,6 +63,10 @@ class Settings:
             report_to=e("REPORT_TO", ""),
             report_from=e("REPORT_FROM", "") or e("SMTP_USER", ""),
         )
+
+    def broker_modes(self) -> tuple[str, ...]:
+        """Modes that trade a real Alpaca paper account."""
+        return tuple(m for m in self.modes if m not in self.virtual_modes)
 
     @staticmethod
     def alpaca_keys(mode: str) -> tuple[str, str]:

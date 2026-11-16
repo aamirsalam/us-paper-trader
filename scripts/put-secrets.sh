@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Fill this tenant's SSM SecureStrings without the values touching Terraform state or shell history.
 #   ./scripts/put-secrets.sh                 # every parameter
-#   ./scripts/put-secrets.sh alpaca/baseline # only those matching a substring
+#   ./scripts/put-secrets.sh alpaca/balanced # only those matching a substring
 set -euo pipefail
 
 PREFIX="/us-paper-trader"

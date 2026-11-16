@@ -32,6 +32,8 @@ module "tenant" {
   name                        = "us-paper-trader"
   vpc_cidr                    = var.vpc_cidr
   modes                       = var.modes
+  virtual_modes               = var.virtual_modes
+  sec_user_agent              = var.sec_user_agent
   schedules_enabled           = var.schedules_enabled
   alert_email                 = var.alert_email
   budget_usd                  = var.budget_usd
@@ -55,6 +57,16 @@ variable "vpc_cidr" {
 variable "modes" {
   type    = list(string)
   default = ["baseline", "conservative", "balanced", "aggressive"]
+}
+
+variable "virtual_modes" {
+  type    = list(string)
+  default = ["baseline"]
+}
+
+variable "sec_user_agent" {
+  type    = string
+  default = ""
 }
 
 variable "schedules_enabled" {

@@ -10,6 +10,7 @@ class Broker(ABC):
     """What the trader needs from a broker. Alpaca paper today; IBKR or a GIFT City broker later."""
 
     name: str = "broker"
+    reconciles: bool = True  # False when there is no broker-side position to check the ledger against
 
     @abstractmethod
     def lock_down_account(self) -> list[str]:

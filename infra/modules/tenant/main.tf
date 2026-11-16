@@ -20,9 +20,12 @@ locals {
   ssm_path_arn   = "arn:${local.partition}:ssm:${local.region}:${local.account}:parameter${local.ssm_prefix}/*"
   log_group_name = "/ecs/${var.name}"
 
+  # Modes with a real Alpaca paper account. Virtual modes run on the ledger alone, so they need no keys.
+  broker_modes = [for m in var.modes : m if !contains(var.virtual_modes, m)]
+
   # name of env var -> SSM parameter (relative to the tenant prefix)
   secret_params = merge(
-    merge([for m in var.modes : {
+    merge([for m in local.broker_modes : {
       "ALPACA_KEY_ID_${upper(m)}" = "alpaca/${m}/key_id"
       "ALPACA_SECRET_${upper(m)}" = "alpaca/${m}/secret"
     }]...),
@@ -38,20 +41,24 @@ locals {
       LEDGER_BACKEND       = "dynamodb"
       LEDGER_TABLE         = aws_dynamodb_table.ledger.name
       TRADER_MODES         = join(",", var.modes)
+      VIRTUAL_MODES        = join(",", var.virtual_modes)
       STARTING_CAPITAL_USD = "1000"
       SMTP_HOST            = "smtp.gmail.com"
       SMTP_PORT            = "587"
       AWS_REGION           = local.region
     },
+    { for k, v in { SEC_USER_AGENT = var.sec_user_agent } : k => v if v != "" },
     var.app_env
   )
 }
 
 # ---- storage ---------------------------------------------------------------------------------------
+# 5 read / 2 write units sit inside DynamoDB's always-free 25/25. Each run reads every
+# mode's whole ledger once, and 5 covers years of growth.
 resource "aws_dynamodb_table" "ledger" {
   name                        = "${var.name}-ledger"
-  billing_mode                = "PROVISIONED" # 2 RCU/WCU sits inside DynamoDB's always-free 25/25
-  read_capacity               = 2
+  billing_mode                = "PROVISIONED"
+  read_capacity               = 5
   write_capacity              = 2
   hash_key                    = "mode"
   range_key                   = "sk"

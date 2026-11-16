@@ -181,7 +181,8 @@ class Ledger:
             }
         )
 
-    def record_fill(self, fill: Fill, settles_on: date) -> dict[str, Any] | None:
+    def record_fill(self, fill: Fill, settles_on: date, rate: float | None = None) -> dict[str, Any] | None:
+        """`rate` is USD/INR on the fill date; the tax module needs it to work out gains in rupees."""
         if fill.qty <= EPS or self.has_fill(fill.order_id):
             return None
         gross = fill.qty * fill.price
@@ -202,13 +203,22 @@ class Ledger:
                 "price": fill.price,
                 "fees": fees,
                 "realized": round(realized, 6),
+                **({"rate": rate} if rate else {}),
             }
         )
 
-    def record_dividend(self, action_id: str, symbol: str, qty: float, rate: float, paid_on: date):
+    def record_dividend(
+        self,
+        action_id: str,
+        symbol: str,
+        qty: float,
+        per_share: float,
+        paid_on: date,
+        rate: float | None = None,
+    ):
         if any(e.get("action_id") == action_id for e in self.of_type("dividend")):
             return None
-        gross = qty * rate
+        gross = qty * per_share
         net, withheld = self.costs.dividend_net(gross)
         return self._add(
             {
@@ -220,6 +230,7 @@ class Ledger:
                 "gross": round(gross, 6),
                 "withheld": withheld,
                 "net": net,
+                **({"rate": rate} if rate else {}),
             }
         )
 

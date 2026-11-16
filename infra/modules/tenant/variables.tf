@@ -16,6 +16,18 @@ variable "modes" {
   default     = ["baseline", "conservative", "balanced", "aggressive"]
 }
 
+variable "virtual_modes" {
+  description = "Modes kept on the ledger only, with no Alpaca account (Alpaca allows 3 paper accounts per login)."
+  type        = list(string)
+  default     = ["baseline"]
+}
+
+variable "sec_user_agent" {
+  description = "Contact string SEC EDGAR asks for, e.g. \"Your Name you@example.com\". Enables the earnings-date fallback."
+  type        = string
+  default     = ""
+}
+
 variable "image_tag" {
   description = "ECR tag the scheduled tasks run. CI moves this tag on every deploy."
   type        = string
@@ -71,7 +83,7 @@ variable "budget_usd" {
 }
 
 variable "alert_email" {
-  description = "Where budget alerts go."
+  description = "Where budget alerts and task-failure alerts go."
   type        = string
   default     = ""
 }

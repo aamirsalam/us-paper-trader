@@ -9,7 +9,7 @@ EventBridge Scheduler (America/New_York, Mon–Fri)
   08:45 ET premarket ─┐
   10:05 ET trade     ─┼─► ECS Fargate task (arm64, 0.5 vCPU / 1 GB, runs minutes, then exits)
   16:30 ET postclose ─┘        │  reads secrets from SSM, writes ledger to DynamoDB
-                               ├─► Alpaca paper API (one $1,000 paper account per mode)
+                               ├─► Alpaca paper API ($1,000 paper account per mode; baseline is ledger-only)
                                ├─► ECB USD/INR rate (Frankfurter)
                                └─► report email (SMTP)
 ```
@@ -29,7 +29,7 @@ EventBridge Scheduler (America/New_York, Mon–Fri)
   sell-side SEC/FINRA fees, and TCS tracking against the ₹10 lakh/FY threshold. Alpaca paper doesn't
   simulate dividends at all; the ledger credits them from Alpaca's corporate-actions feed.
 - **Report in INR** splits each mode's result into *strategy*, *rupee move* and *bank FX friction*, and
-  compares every mode against the buy-and-hold baseline.
+  compares every mode against the buy-and-hold baseline **after Indian tax** (`tax.py`, below).
 
 ## Modes
 
@@ -44,6 +44,30 @@ SGOV (T-bill ETF) is used as "cash" so idle money still earns the T-bill yield, 
 Expect `aggressive` to trade far more (and so pay more in fees and settlement delays) and to swing
 harder; the report's max-drawdown column is the honest place to judge it.
 
+`baseline` is **ledger-only**: Alpaca allows three paper accounts per login, and a single buy of VOO
+doesn't need one. It takes prices, calendar and dividends from another mode's Alpaca connection and
+fills on our own books at the market price plus 2 bps. Change with `virtual_modes` in `terraform.tfvars`.
+
+## Indian tax (what you'd actually keep)
+
+Every report and backtest has an **after-tax** column: the rupees left if you sold everything and
+brought it home today.
+
+| Item | Treatment |
+|---|---|
+| Lots | First-in, first-out, each with its own purchase date |
+| Rupee conversion | Cost and sale each converted at the rate on the last day of the month before that transaction (Rule 115; mid-market rate stands in for SBI's TT buying rate). A weaker rupee is taxed as gain. |
+| Held over 24 months | Long-term: 12.5% + 4% cess = 13% |
+| Held 24 months or less | Short-term: your slab rate + cess (default 30% → 31.2%) |
+| Losses | Short-term losses offset any gain, long-term only long-term; unused losses carry forward |
+| Dividends | Slab rate on the gross, less credit for the 25% US withholding (Form 67), capped at the Indian tax |
+| Timing | Each finished financial year's tax comes out of the portfolio at year end, so later growth on it is lost |
+
+Set your own marginal rate with `TAX_SLAB_RATE` in `app_env` (also `TAX_SURCHARGE`, `TAX_CESS`,
+`TAX_LTCG_RATE`). Not modelled: basic exemption and rebates, the 8-year expiry of carried losses, and
+the chance that frequent trading is assessed as business income. These are estimates to compare
+modes, not a tax computation: confirm with a CA before filing.
+
 ## Earnings blackout (aggressive mode)
 
 Single stocks gap overnight on earnings; ETFs don't report. So for the ten stocks in `aggressive`:
@@ -53,9 +77,10 @@ Single stocks gap overnight on earnings; ETFs don't report. So for the ten stock
   at the next rebalance.
 - **Fail safe**: if no earnings source answers, no new single-stock buys that day; holdings untouched.
 
-Dates come from Nasdaq's public earnings calendar (keyless). If that's down and `SEC_USER_AGENT` is
-set, the next date is projected from the company's SEC 8-K Item 2.02 history (a fuzzier ±1 week window
-that blocks buys but never forces an exit). Backtests use the actual SEC filing dates.
+Dates come from Nasdaq's public earnings calendar (keyless). Nasdaq often refuses cloud servers, so set
+`sec_user_agent` in `terraform.tfvars` from day one: if Nasdaq doesn't answer, the next date is projected from the company's SEC 8-K Item 2.02 history (a fuzzier ±1 week window
+that blocks buys but never forces an exit). The email shows which source was used each day. Backtests
+use the actual SEC filing dates.
 
 ## Loss limits
 
@@ -86,24 +111,39 @@ model): decisions on yesterday's close, fills at today's open plus 5 bps, T+1 se
 paid 14 days after ex-date net of 25% withholding, FX spread in and out at the historical USD/INR rate.
 SGOV history before its 2020 launch is spliced from BIL.
 
-**Results, 2016-01-04 → 2026-11-11** ($1,000 per mode, limits on, earnings blackout off):
+**Results, 2016-01-04 → 2026-11-13** ($1,000 per mode, limits on, earnings blackout off, 30% slab):
 
-| Mode | CAGR USD | CAGR INR | Max drawdown | Return/vol |
-|---|---|---|---|---|
-| baseline (VOO) | 14.3% | 17.8% | -34.0% | 0.81 |
-| conservative | 6.8% | 10.1% | -13.8% | 0.91 |
-| balanced | 9.9% | 13.2% | -19.2% | 0.66 |
-| aggressive | 24.8% | 28.6% | -27.6% | 1.08 |
-| *aggressive, ETFs only* | *7.9%* | *11.2%* | *-15.0%* | *0.58* |
+| Mode | CAGR USD | CAGR INR | **CAGR INR after tax** | Max drawdown | Return/vol |
+|---|---|---|---|---|---|
+| baseline (VOO) | 14.3% | 17.8% | **16.5%** | -34.0% | 0.81 |
+| conservative | 6.8% | 10.1% | **7.6%** | -13.8% | 0.90 |
+| balanced | 9.9% | 13.3% | **9.5%** | -19.2% | 0.66 |
+| aggressive | 24.8% | 28.7% | **20.5%** | -27.6% | 1.08 |
+| *aggressive, ETFs only* | *7.9%* | *11.3%* | ***8.1%*** | *-15.0%* | *0.58* |
+
+After-tax CAGR in INR at other slab rates:
+
+| Mode | 5% slab | 20% slab | 30% slab |
+|---|---|---|---|
+| baseline | 16.6% | 16.6% | 16.5% |
+| conservative | 9.5% | 8.4% | 7.6% |
+| balanced | 12.7% | 10.9% | 9.5% |
+| aggressive | 27.4% | 23.3% | 20.5% |
+| *aggressive, ETFs only* | *10.8%* | *9.2%* | *8.1%* |
 
 How to read it:
-- **Buy-and-hold won.** Every rules-based mode trails VOO on return; conservative and balanced buy a
-  smaller worst-case drop with it.
+- **Tax widens buy-and-hold's lead.** Baseline loses 1.3 points a year to tax at any slab, because it
+  only ever pays the 13% long-term rate once, at the end. The trading modes realise nearly all their
+  gains short-term and lose 2.5 to 8 points a year at a 30% slab.
+- **Buy-and-hold won.** Conservative and balanced trail VOO by 7 to 9 points a year after tax; what they
+  buy is a smaller worst-case drop.
 - **Aggressive's number is mostly hindsight.** Its stock list is today's winners. With only its ETFs
-  the same rules make 7.9%. Treat the 24.8% as an upper bound; the paper run is the honest test.
-- **Loss limits are insurance, not alpha.** Turning them off adds 0.2–0.8% a year; they cut balanced's
-  worst drawdown from -24% to -19% and barely change the others.
-- About 3.5 points of the INR return is the rupee weakening (66 → 88), not the strategy.
+  the same rules make 8.1% after tax, half of baseline. Treat 20.5% as an upper bound.
+- **Your slab matters a lot for the active modes** and hardly at all for baseline.
+- **Loss limits are insurance, not alpha.** Turning them off adds 0.2–0.8% a year before tax; they cut
+  balanced's worst drawdown from -24% to -19% and barely change the others.
+- About 3.5 points of the INR return is the rupee weakening (66 → 88), not the strategy, and that part
+  is taxed too.
 
 ## Isolation from the NSE stack (same AWS account)
 
@@ -115,6 +155,7 @@ How to read it:
 | Data / secrets | Own DynamoDB table, own SSM path `/us-paper-trader/*`, own log group |
 | Compute | Own ECS cluster and task definition, own scheduler group |
 | Cost | Every resource tagged `project=us-paper-trader`, own budget alarm |
+| Alerts | Own SNS topic: an email when any run exits with an error or fails to start |
 | LLM quotas | Use a separate Gemini/GCP project when the AI mode is added |
 
 Don't enable AWS Organizations or IAM Identity Center for this: on the Free plan it ends the credits.
@@ -126,7 +167,7 @@ Don't enable AWS Organizations or IAM Identity Center for this: on the Free plan
 | Fargate arm64, ~1 task-hour/day × 22 days | 0.45–0.60 |
 | Public IPv4 while tasks run | 0.10 |
 | ECR image storage | 0.05 |
-| DynamoDB (provisioned 2/2, always-free), SSM standard, logs, scheduler | 0 |
+| DynamoDB (provisioned 5 read / 2 write, always-free), SSM standard, logs, scheduler, SNS alerts | 0 |
 | Budget alarm (free if it's one of the account's first two budgets) | 0–0.60 |
 | Alpaca paper, Frankfurter FX, GitHub Actions | 0 |
 
@@ -136,18 +177,20 @@ Don't enable AWS Organizations or IAM Identity Center for this: on the Free plan
 
 ## Setup (once, from your laptop)
 
-1. **Alpaca**: sign up (paper-only works from India), then in the dashboard create one paper account
-   per mode (four: baseline, conservative, balanced, aggressive) with a **$1,000** balance each and
-   generate API keys for each.
+1. **Alpaca**: sign up (paper-only works from India), then in the dashboard create **three** paper
+   accounts (conservative, balanced, aggressive: Alpaca's limit per login) with a **$1,000** balance
+   each and generate API keys for each. Baseline needs none.
 2. **Email**: a Gmail app password for the sending account (Google Account → Security → App passwords).
 3. **Terraform**
    ```bash
    cd infra/envs/prod
    cp backend.hcl.example backend.hcl            # state bucket (the NSE one is fine)
-   cp terraform.tfvars.example terraform.tfvars  # alert email, OIDC provider ARN
+   cp terraform.tfvars.example terraform.tfvars  # alert email, SEC contact, OIDC provider ARN
    terraform init -backend-config=backend.hcl
    terraform apply                               # schedules stay DISABLED
    ```
+   AWS then emails a subscription confirmation to the alert address: click it, or failure alerts
+   won't arrive.
 4. **Image**: in GitHub → Settings → Variables, set `AWS_DEPLOY_ROLE_ARN`
    (`terraform output -json tenant | jq -r .github_deploy_role_arn`) and `AWS_REGION=ap-southeast-2`,
    then run the *deploy* workflow.
@@ -176,13 +219,14 @@ src/usptrader/
   runner.py       phases; idempotent, one failing mode doesn't stop the others
   compliance.py   LRS guard
   risk.py         weekly pause, drawdown halt, single-stock cap
+  tax.py          Indian after-tax ledger: FIFO lots, short/long-term, set-off, dividend credit
   earnings.py     Nasdaq calendar, SEC 8-K 2.02 history, fail-safe chain
   backtest.py     day-by-day replay of the real trader; marketdata.py fetches and caches Yahoo
   costs.py        Indian-investor cost model
   ledger.py       append-only ledger (DynamoDB or local JSONL), positions, T+1 settled cash
   rebalance.py    targets -> orders, sells first, drift band
-  strategies/     baseline, conservative, balanced
-  broker/         Alpaca paper adapter (live keys refused), fake broker for tests
+  strategies/     baseline, conservative, balanced, aggressive
+  broker/         Alpaca paper adapter (live keys refused), virtual (ledger-only), historical, fake
   report.py       INR-aware morning email
 infra/modules/tenant   the isolated AWS tenant
 infra/envs/prod        root module
