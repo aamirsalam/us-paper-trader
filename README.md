@@ -7,7 +7,7 @@ Fully separate from the NSE project: own repo, own code, own AWS tenant.
 ```
 EventBridge Scheduler (America/New_York, Mon–Fri)
   08:45 ET premarket ─┐
-  10:05 ET trade     ─┼─► ECS Fargate task (arm64, 0.5 vCPU / 1 GB, runs minutes, then exits)
+  10:05 ET trade     ─┼─► ECS Fargate task (x86, 0.5 vCPU / 1 GB, runs minutes, then exits)
   16:30 ET postclose ─┘        │  reads secrets from SSM, writes ledger to DynamoDB
                                ├─► Alpaca paper API ($1,000 paper account per mode; baseline is ledger-only)
                                ├─► ECB USD/INR rate (Frankfurter)
@@ -165,7 +165,7 @@ Don't enable AWS Organizations or IAM Identity Center for this: on the Free plan
 
 | Item | ~USD/month |
 |---|---|
-| Fargate arm64, ~1 task-hour/day × 22 days | 0.45–0.60 |
+| Fargate x86, ~10 task-minutes/day × 22 days (ARM64 is ~2¢/month cheaper but builds take 30+ min on a laptop) | 0.10–0.20 |
 | Public IPv4 while tasks run | 0.10 |
 | ECR image storage | 0.05 |
 | DynamoDB (provisioned 5 read / 2 write, always-free), SSM standard, logs, scheduler, SNS alerts | 0 |
@@ -178,45 +178,63 @@ Don't enable AWS Organizations or IAM Identity Center for this: on the Free plan
 
 ## Setup (once, from your laptop)
 
-Commands are PowerShell on Windows; each script also has a bash twin (`.sh`) where noted.
+Everything below runs through one Python command, `usptrader-ops`, the same on Windows, macOS and
+Linux. Commands shown are PowerShell; on macOS/Linux use `.venv/bin/...` and `export`.
 
 1. **Alpaca**: sign up (paper-only works from India), then in the dashboard create **three** paper
    accounts (conservative, balanced, aggressive: Alpaca's limit per login) with a **$1,000** balance
-   each and generate API keys for each. Baseline needs none.
-2. **Email**: a Gmail app password for the sending account (Google Account → Security → App passwords).
-3. **Sign in and check the account's guardrails**
+   each and generate API keys for each. Baseline and aggressive-ai need none.
+2. **Email**: a Gmail app password for the sending account (https://myaccount.google.com/apppasswords;
+   needs 2-Step Verification on).
+3. **Install the ops tool** (from the repo folder; no activation script, so no execution-policy prompts)
+   ```powershell
+   py -m venv .venv
+   .venv\Scripts\python -m pip install -e .
+   ```
+4. **AWS sign-in that doesn't expire mid-task**
    ```powershell
    aws login --region ap-southeast-2
-   . .\scripts\aws-session.ps1                    # signs in if needed, hands the session to Terraform
-   .\scripts\preflight.ps1
+   .venv\Scripts\usptrader-ops setup-profile
+   [Environment]::SetEnvironmentVariable("AWS_PROFILE", "usptrader", "User")   # new terminals
+   $env:AWS_PROFILE = "usptrader"                                              # this terminal
    ```
-   Free-plan accounts sit under AWS guardrails that block some actions (GitHub OIDC, sometimes VPCs or
-   managed IAM policies). The pre-flight dry-runs each one and prints the `terraform.tfvars` switches
-   to set. Nothing it tests is left behind.
-4. **Terraform** (state is a local file in `infra\envs\prod`, git-ignored, like the NSE stack's: back it up)
+   The `usptrader` profile fetches fresh keys from your `aws login` session every time Terraform or
+   the tool needs them, so there's nothing to export or clear. Run `aws login` again only when told
+   the sign-in itself has expired.
+5. **Check the account's guardrails**: `.venv\Scripts\usptrader-ops preflight`. Free-plan accounts
+   sit under AWS guardrails that block some actions (GitHub OIDC, sometimes VPCs or managed IAM
+   policies). It dry-runs each one, cleans up after itself, and prints the `terraform.tfvars`
+   switches to set.
+6. **Terraform** (state is a local file in `infra\envs\prod`, git-ignored, like the NSE stack's: back it up)
    ```powershell
    cd infra\envs\prod
-   copy terraform.tfvars.example terraform.tfvars  # alert_email, sec_user_agent, switches from step 3
+   copy terraform.tfvars.example terraform.tfvars  # alert_email, sec_user_agent, switches from step 5
    terraform init
-   terraform plan                                  # everything should be named us-paper-trader*
-   terraform apply                                 # schedules stay DISABLED
+   terraform plan -out=tfplan                      # everything should be named us-paper-trader*
+   terraform apply tfplan                          # schedules stay DISABLED
    cd ..\..\..
    ```
    AWS then emails a subscription confirmation to the alert address: click it, or failure alerts
    won't arrive.
-5. **Image**: with Docker Desktop running, `.\scripts\push-image.ps1` (builds linux/arm64, pushes `:live`).
-   If your account allows GitHub OIDC, the *deploy* workflow can do this on every push instead: set
-   repo variables `AWS_DEPLOY_ROLE_ARN` (from `terraform output -json tenant`) and `AWS_REGION`.
-6. **Secrets**: `.\scripts\put-secrets.ps1` (or `put-secrets.sh`). Hidden prompts for each mode's
-   Alpaca key ID and secret, `ai/gemini_api_key` (a Gemini key from its own Google project, so it
-   doesn't share another project's free quota), `smtp/user`, `smtp/password` (the app password) and
-   `report/to`. Without a Gemini key, aggressive-ai simply follows the rules and the report says so.
-7. **Smoke test** on a US trading day: `.\scripts\run-phase.ps1 premarket`, then `trade` while the
-   market is open (8:00 PM–2:30 AM IST until March), then `postclose` (you should get the email).
-8. **Go**: set `schedules_enabled = true` in `terraform.tfvars` and `terraform apply`.
+7. **Image**: with Docker Desktop running, `.venv\Scripts\usptrader-ops push-image`. It builds for
+   the task's platform (x86 by default, native on an Intel/AMD laptop, about a minute) and pushes
+   `:live`. The ECR login goes into a throwaway Docker config, so Windows Credential Manager (which
+   rejects ECR tokens) is never involved.
+8. **Secrets**: `.venv\Scripts\usptrader-ops secrets`, or `... secrets --clipboard` to copy each
+   value and press Enter instead of pasting (pasting into hidden prompts is unreliable in VS Code's
+   terminal). It asks for each mode's Alpaca key ID and secret, `ai/gemini_api_key` (a Gemini key
+   from its own Google project), `smtp/user`, `smtp/password` (the app password) and `report/to`,
+   then prints stored lengths (never values) so a truncated paste stands out. Without a Gemini key,
+   aggressive-ai simply follows the rules and the report says so.
+9. **Smoke test** on a US trading day: `.venv\Scripts\usptrader-ops run premarket`, then `run trade`
+   while the market is open (8:00 PM–2:30 AM IST until March), then `run report` (you should get
+   the email).
+10. **Go**: set `schedules_enabled = true` in `terraform.tfvars`, then `terraform plan -out=tfplan`
+    and `terraform apply tfplan`.
 
-After about a day, set `activate_cost_tag = true` and apply again so the budget can filter on the tag.
-If Terraform says the token has expired, run `. .\scripts\aws-session.ps1` again: it clears the stale keys, signs in if needed and exports fresh ones.
+Day to day: `usptrader-ops run resume --mode aggressive` lifts a drawdown halt early; `push-image`
+after code changes; `secrets <filter>` to rotate one key. The older `scripts\*.ps1` and `*.sh`
+helpers still work but are superseded and will be removed once the Python tool has run for a while.
 
 ## Local use
 

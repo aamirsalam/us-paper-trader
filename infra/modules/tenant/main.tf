@@ -139,7 +139,7 @@ resource "aws_ecs_task_definition" "trader" {
 
   runtime_platform {
     operating_system_family = "LINUX"
-    cpu_architecture        = "ARM64" # Graviton: ~20% cheaper than x86 on Fargate
+    cpu_architecture        = var.cpu_architecture
   }
 
   container_definitions = jsonencode([{

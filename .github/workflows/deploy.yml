@@ -1,6 +1,6 @@
 name: deploy
 
-# Builds the arm64 image and moves the `live` tag in ECR. The scheduled tasks always
+# Builds the amd64 image and moves the `live` tag in ECR. The scheduled tasks always
 # run `:live`, so there's nothing else to roll. Uses OIDC: no AWS keys stored in GitHub.
 # Repository variables needed: AWS_DEPLOY_ROLE_ARN (terraform output), AWS_REGION.
 
@@ -39,7 +39,7 @@ jobs:
       - uses: docker/build-push-action@v6
         with:
           context: .
-          platforms: linux/arm64
+          platforms: linux/amd64
           push: true
           provenance: false
           tags: |

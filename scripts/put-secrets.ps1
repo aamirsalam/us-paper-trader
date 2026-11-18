@@ -41,6 +41,6 @@ if ($FromClipboard) { Set-Clipboard -Value " " }  # don't leave the last secret 
 
 # Lengths only, never values, so you can spot a truncated paste.
 Write-Host ""
-Write-Host "Stored lengths (a value of 8 is the CHANGE_ME placeholder, i.e. not set yet):"
+Write-Host "Stored lengths (values are never shown; NotSet = True means still the CHANGE_ME placeholder):"
 aws ssm get-parameters-by-path --region $Region --path "/us-paper-trader" --recursive --with-decryption `
-    --query "Parameters[].[Name, length(Value)]" --output table
+    --query "Parameters[].{Name: Name, Length: length(Value), NotSet: Value == 'CHANGE_ME'}" --output table

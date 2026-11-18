@@ -13,10 +13,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8", "ruff>=0.6", "moto[dynamodb]>=5"]
+dev = ["pytest>=8", "ruff>=0.6", "moto[dynamodb,ssm,ecs,ec2,iam,ecr,events,scheduler]>=5"]
 
 [project.scripts]
 usptrader = "usptrader.cli:main"
+usptrader-ops = "usptrader.ops:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

@@ -1,4 +1,5 @@
-# Build the trader image for Fargate (linux/arm64) and push it to this tenant's ECR as :live.
+# Build the trader image for Fargate (linux/amd64) and push it to this tenant's ECR as :live.
+# Superseded by the Python command `usptrader-ops push-image`, which reads the platform from AWS.
 # Use this instead of the GitHub deploy workflow when the account can't use GitHub's OIDC login.
 # Needs Docker Desktop running. Run from the repo root after `aws login` and `terraform apply`:
 #   .\scripts\push-image.ps1
@@ -43,11 +44,10 @@ foreach ($sub in "contexts", "buildx", "cli-plugins") {
 $previousDockerConfig = $env:DOCKER_CONFIG
 $env:DOCKER_CONFIG = $tempConfig
 try {
-    # 3. Build for arm64 (the tasks run on Graviton; Docker Desktop emulates it on an Intel/AMD
-    #    laptop) and push. buildx prints progress on stderr, which Windows PowerShell 5.1 would
+    # 3. Build for amd64 (native on an Intel/AMD laptop) and push. buildx prints progress on stderr, which Windows PowerShell 5.1 would
     #    treat as an error under "Stop", so relax that for this call and check the exit code instead.
     $ErrorActionPreference = "Continue"
-    docker buildx build --platform linux/arm64 --provenance=false `
+    docker buildx build --platform linux/amd64 --provenance=false `
         -t "${repoUrl}:live" -t "${repoUrl}:$sha" --push $root
     $buildExit = $LASTEXITCODE
     $ErrorActionPreference = "Stop"

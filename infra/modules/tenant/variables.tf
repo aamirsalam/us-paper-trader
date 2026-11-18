@@ -46,6 +46,17 @@ variable "image_tag" {
   default     = "live"
 }
 
+variable "cpu_architecture" {
+  description = "X86_64 (default: images build natively on an Intel/AMD laptop in about a minute) or ARM64 (Graviton, ~20% cheaper per hour, but a laptop has to emulate it and builds take 30+ minutes). At a few task-minutes a day the difference is about 2 cents a month."
+  type        = string
+  default     = "X86_64"
+
+  validation {
+    condition     = contains(["X86_64", "ARM64"], var.cpu_architecture)
+    error_message = "cpu_architecture must be X86_64 or ARM64."
+  }
+}
+
 variable "task_cpu" {
   type    = number
   default = 512
