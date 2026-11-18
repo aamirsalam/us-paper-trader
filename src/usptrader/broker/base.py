@@ -47,3 +47,7 @@ class Broker(ABC):
 
     @abstractmethod
     def cash_dividends(self, symbols: list[str], start: date, end: date) -> list[Dividend]: ...
+
+    def news(self, symbol: str, days: int = 14) -> list[str]:
+        """Recent headlines for one stock, newest first. Brokers without a news feed return none."""
+        return []

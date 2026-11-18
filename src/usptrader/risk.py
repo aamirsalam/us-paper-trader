@@ -40,14 +40,15 @@ NO_LIMITS = RiskLimits()
 
 def limits_from_env(mode: str, default: RiskLimits) -> RiskLimits:
     """RISK_<MODE>_WEEKLY / _DRAWDOWN / _SINGLE (fractions, or "off") and RISK_<MODE>_HALT_DAYS."""
+    key = mode.upper().replace("-", "_")  # 'aggressive-ai' -> RISK_AGGRESSIVE_AI_*
 
     def val(suffix: str, current: float | None) -> float | None:
-        raw = os.environ.get(f"RISK_{mode.upper()}_{suffix}")
+        raw = os.environ.get(f"RISK_{key}_{suffix}")
         if raw is None or raw == "":
             return current
         return None if raw.lower() in ("off", "none", "0") else float(raw)
 
-    halt = os.environ.get(f"RISK_{mode.upper()}_HALT_DAYS")
+    halt = os.environ.get(f"RISK_{key}_HALT_DAYS")
     return replace(
         default,
         weekly_loss=val("WEEKLY", default.weekly_loss),

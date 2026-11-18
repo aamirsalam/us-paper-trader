@@ -31,6 +31,7 @@ class Strategy(ABC):
     drift_threshold: float = 0.05
     min_trade: float = 1.0
     limits: RiskLimits = NO_LIMITS
+    ai_veto: bool = False  # True: new single-stock buys get an AI second opinion before they're planned
 
     @abstractmethod
     def decide(

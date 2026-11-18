@@ -12,7 +12,7 @@ import csv
 import json
 import math
 import statistics
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date
 from pathlib import Path
 
@@ -77,6 +77,11 @@ def run_backtest(
     tax_model: TaxModel | None = None,
     progress=None,
 ) -> BacktestResult:
+    # An AI can't be replayed fairly: it has already read the news of those years. In history
+    # the AI-veto mode would just copy its rules-only twin, so it's left out of backtests.
+    ai_modes = [m for m in settings.modes if getattr(strategies.get(m), "ai_veto", False)]
+    if ai_modes:
+        settings = replace(settings, modes=tuple(m for m in settings.modes if m not in ai_modes))
     store = MemoryStore()
     brokers: dict[str, HistoricalBroker] = {}
 
@@ -121,6 +126,14 @@ def run_backtest(
         f"{tax_model.lt_months} months, each year's tax paid out of the portfolio, and everything "
         "sold at the end. Set TAX_SLAB_RATE to your own rate. Estimates, not tax advice.",
         f"Fills at the next open with {slippage_bps:g} bps slippage; live orders go in at ~10:05 ET.",
+        *(
+            [
+                f"Left out: {', '.join(ai_modes)}. An AI can't be backtested fairly (it has seen the "
+                "news of those years); only the live paper run can judge it."
+            ]
+            if ai_modes
+            else []
+        ),
     ]
     if "aggressive" in settings.modes:
         caveats.append(

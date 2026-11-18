@@ -7,7 +7,13 @@ from dataclasses import dataclass, field
 
 from .costs import CostModel
 
-DEFAULT_MODES = ("baseline", "conservative", "balanced", "aggressive")
+DEFAULT_MODES = ("baseline", "conservative", "balanced", "aggressive", "aggressive-ai")
+DEFAULT_VIRTUAL = ("baseline", "aggressive-ai")
+
+
+def env_suffix(mode: str) -> str:
+    """Mode name as it appears in environment variable names: 'aggressive-ai' -> 'AGGRESSIVE_AI'."""
+    return mode.upper().replace("-", "_")
 
 
 def _f(name: str, default: float) -> float:
@@ -19,7 +25,7 @@ def _f(name: str, default: float) -> float:
 class Settings:
     modes: tuple[str, ...] = DEFAULT_MODES
     # Modes kept on our own ledger with no broker account (Alpaca allows 3 paper accounts per login).
-    virtual_modes: tuple[str, ...] = ("baseline",)
+    virtual_modes: tuple[str, ...] = DEFAULT_VIRTUAL
     starting_capital_usd: float = 1000.0
     ledger_backend: str = "local"  # "local" | "dynamodb"
     ledger_table: str = "us-paper-trader-ledger"
@@ -45,7 +51,8 @@ class Settings:
             tcs_rate=_f("TCS_RATE", CostModel.tcs_rate),
             tcs_threshold_inr=_f("TCS_THRESHOLD_INR", CostModel.tcs_threshold_inr),
         )
-        virtual = tuple(m.strip() for m in e("VIRTUAL_MODES", "baseline").split(",") if m.strip())
+        raw_virtual = e("VIRTUAL_MODES", ",".join(DEFAULT_VIRTUAL))
+        virtual = tuple(m.strip() for m in raw_virtual.split(",") if m.strip())
         return cls(
             modes=modes,
             virtual_modes=tuple(m for m in virtual if m in modes),
@@ -71,7 +78,7 @@ class Settings:
     @staticmethod
     def alpaca_keys(mode: str) -> tuple[str, str]:
         """Each mode trades its own Alpaca paper account: ALPACA_KEY_ID_<MODE> / ALPACA_SECRET_<MODE>."""
-        suffix = mode.upper()
+        suffix = env_suffix(mode)
         key = os.environ.get(f"ALPACA_KEY_ID_{suffix}")
         secret = os.environ.get(f"ALPACA_SECRET_{suffix}")
         if not key or not secret:

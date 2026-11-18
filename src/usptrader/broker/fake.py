@@ -30,6 +30,7 @@ class FakeBroker(Broker):
         self._orders: dict[str, tuple[str, Fill | None]] = {}
         self.submitted: list[OrderIntent] = []
         self.dividends: list[Dividend] = []
+        self.headlines: dict[str, list[str]] = {}
 
     def lock_down_account(self) -> list[str]:
         return []
@@ -96,3 +97,6 @@ class FakeBroker(Broker):
 
     def cash_dividends(self, symbols: list[str], start: date, end: date) -> list[Dividend]:
         return [d for d in self.dividends if d.symbol in symbols and start <= d.payable_date <= end]
+
+    def news(self, symbol: str, days: int = 14) -> list[str]:
+        return list(self.headlines.get(symbol, []))

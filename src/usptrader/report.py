@@ -133,6 +133,18 @@ def build_report(
             earn = sum(1 for e in led.of_type("rejection") if e["reason"].startswith("earnings"))
             if earn:
                 lines.append(f"    {earn} buys held back by the earnings blackout so far")
+            if getattr(strategies.get(m["mode"]), "ai_veto", False):
+                reviews = [r for p in led.of_type("plan") for r in p.get("meta", {}).get("ai_reviews", [])]
+                if reviews:
+                    vetoes = [r["symbol"] for r in reviews if r["decision"] == "veto"]
+                    down = sum(1 for r in reviews if r["decision"] == "unavailable")
+                    lines.append(
+                        f"    AI reviews so far: {len(reviews)}, vetoed {len(vetoes)}"
+                        + (f" ({', '.join(vetoes[-5:])})" if vetoes else "")
+                        + (f", ⚠ {down} without AI (rules decided)" if down else "")
+                    )
+                else:
+                    lines.append("    AI reviews so far: none (no new single-stock buys yet)")
             if m["mode"] in settings.virtual_modes:
                 lines.append("    ledger-only mode: fills simulated at market price, no broker account")
             for mm in m["mismatches"]:

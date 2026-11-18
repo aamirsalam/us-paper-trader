@@ -71,3 +71,6 @@ class VirtualBroker(Broker):
 
     def cash_dividends(self, symbols: list[str], start: date, end: date) -> list[Dividend]:
         return self.data.cash_dividends(symbols, start, end)
+
+    def news(self, symbol: str, days: int = 14) -> list[str]:
+        return self.data.news(symbol, days)

@@ -38,14 +38,15 @@ EventBridge Scheduler (America/New_York, Mon–Fri)
 | `baseline` | Buy and hold VOO. Everything else has to beat this after costs. |
 | `conservative` | VOO 60% / SGOV 40% above VOO's 200-day average, 100% SGOV below it (±2% hysteresis band). |
 | `balanced` | Monthly: top 3 of 12 broad/sector ETFs by 6-month return that are also above their 200-day average; empty slots go to SGOV. |
+| `aggressive-ai` | `aggressive`'s rules plus an **AI veto**: before a new single-stock buy, Gemini reads the last 14 days of headlines (Alpaca's free news feed), the trend and the earnings date, and may block it; the slot then sits in SGOV until the next rebalance. It can only remove buys, never add or sell. ~2–6 calls a month. Ledger-only (no Alpaca account). Runs beside `aggressive`, so the gap between them is the AI's contribution. Not backtestable: the AI has already read the news of past years. |
 | `aggressive` | A notch above balanced (see the backtest caveat below). Twice a month (1st/16th): top 3 of 20 ETFs **and mega-cap stocks** (NVDA, MSFT, AAPL…) on a 3+6-month momentum blend, above their 100-day average. Market brake: max 1 pick while VOO is below its 200-day average. Protective exit: a pick closing below its 50-day average goes to SGOV until the next rebalance. Still unleveraged, so LRS-compliant. |
 
 SGOV (T-bill ETF) is used as "cash" so idle money still earns the T-bill yield, as it would for real.
 Expect `aggressive` to trade far more (and so pay more in fees and settlement delays) and to swing
 harder; the report's max-drawdown column is the honest place to judge it.
 
-`baseline` is **ledger-only**: Alpaca allows three paper accounts per login, and a single buy of VOO
-doesn't need one. It takes prices, calendar and dividends from another mode's Alpaca connection and
+`baseline` and `aggressive-ai` are **ledger-only**: Alpaca allows three paper accounts per login, and
+neither needs its own (baseline is a single buy of VOO; aggressive-ai mirrors aggressive's orders). It takes prices, calendar and dividends from another mode's Alpaca connection and
 fills on our own books at the market price plus 2 bps. Change with `virtual_modes` in `terraform.tfvars`.
 
 ## Indian tax (what you'd actually keep)
@@ -207,7 +208,9 @@ Commands are PowerShell on Windows; each script also has a bash twin (`.sh`) whe
    If your account allows GitHub OIDC, the *deploy* workflow can do this on every push instead: set
    repo variables `AWS_DEPLOY_ROLE_ARN` (from `terraform output -json tenant`) and `AWS_REGION`.
 6. **Secrets**: `.\scripts\put-secrets.ps1` (or `put-secrets.sh`). Hidden prompts for each mode's
-   Alpaca key ID and secret, `smtp/user`, `smtp/password` (the app password) and `report/to`.
+   Alpaca key ID and secret, `ai/gemini_api_key` (a Gemini key from its own Google project, so it
+   doesn't share another project's free quota), `smtp/user`, `smtp/password` (the app password) and
+   `report/to`. Without a Gemini key, aggressive-ai simply follows the rules and the report says so.
 7. **Smoke test** on a US trading day: `.\scripts\run-phase.ps1 premarket`, then `trade` while the
    market is open (8:00 PM–2:30 AM IST until March), then `postclose` (you should get the email).
 8. **Go**: set `schedules_enabled = true` in `terraform.tfvars` and `terraform apply`.

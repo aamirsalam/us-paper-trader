@@ -59,7 +59,7 @@ variable "vpc_cidr" {
 
 variable "modes" {
   type    = list(string)
-  default = ["baseline", "conservative", "balanced", "aggressive"]
+  default = ["baseline", "conservative", "balanced", "aggressive", "aggressive-ai"]
 }
 
 variable "use_default_vpc" {
@@ -74,7 +74,7 @@ variable "use_permissions_boundary" {
 
 variable "virtual_modes" {
   type    = list(string)
-  default = ["baseline"]
+  default = ["baseline", "aggressive-ai"]
 }
 
 variable "sec_user_agent" {

@@ -9,7 +9,13 @@ from alpaca.common.exceptions import APIError
 from alpaca.data.enums import Adjustment, CorporateActionsType, DataFeed
 from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.historical.corporate_actions import CorporateActionsClient
-from alpaca.data.requests import CorporateActionsRequest, StockBarsRequest, StockLatestTradeRequest
+from alpaca.data.historical.news import NewsClient
+from alpaca.data.requests import (
+    CorporateActionsRequest,
+    NewsRequest,
+    StockBarsRequest,
+    StockLatestTradeRequest,
+)
 from alpaca.data.timeframe import TimeFrame
 from alpaca.trading.client import TradingClient
 from alpaca.trading.enums import OrderSide, OrderStatus, TimeInForce
@@ -31,6 +37,7 @@ class AlpacaPaperBroker(Broker):
         self.trading = TradingClient(key_id, secret, paper=True)
         self.data = StockHistoricalDataClient(key_id, secret)
         self.actions = CorporateActionsClient(key_id, secret)
+        self.news_client = NewsClient(key_id, secret)
         self._calendar: dict[date, bool] = {}
 
     # ---- account ------------------------------------------------------------------------------
@@ -127,6 +134,21 @@ class AlpacaPaperBroker(Broker):
                         payable_date=action.payable_date,
                     )
                 )
+        return out
+
+    def news(self, symbol: str, days: int = 14) -> list[str]:
+        """Headlines from Alpaca's free news feed (Benzinga), newest first."""
+        req = NewsRequest(
+            symbols=symbol,
+            start=datetime.now(UTC) - timedelta(days=days),
+            limit=20,
+            sort="desc",
+            exclude_contentless=False,
+        )
+        out = []
+        for item in self.news_client.get_news(req).data.get("news", []):
+            when = item.created_at.astimezone(_ET).strftime("%d %b")
+            out.append(f"{when}: {' '.join(item.headline.split())[:200]}")
         return out
 
     # ---- orders -------------------------------------------------------------------------------

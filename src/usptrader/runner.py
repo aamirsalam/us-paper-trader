@@ -24,7 +24,10 @@ from .ledger import EPS, Ledger, LedgerStore
 from .models import OrderIntent
 from .rebalance import plan_orders
 from .risk import NO_LIMITS, RiskLimits, RiskState, assess, limits_from_env
-from .strategies import CASH_PROXY, StrategyContext
+from .strategies import CASH_PROXY, StrategyContext, StrategyResult
+from .strategies.base import sma, total_return
+
+_FROM_ENV = object()
 
 log = logging.getLogger(__name__)
 ET = ZoneInfo("America/New_York")
@@ -57,6 +60,7 @@ class Trader:
         fill_wait_seconds: int = 90,
         earnings: EarningsCalendar | None = None,
         limits_enabled: bool = True,
+        reviewer=_FROM_ENV,
     ) -> None:
         self.settings = settings
         self.broker_for = broker_for
@@ -67,6 +71,7 @@ class Trader:
         self.guard = ComplianceGuard()
         self.limits_enabled = limits_enabled
         self._earnings = earnings
+        self._reviewer = reviewer
         self._rate: tuple[float, str] | None = None
         self._ledgers: dict[str, Ledger] = {}
 
@@ -80,6 +85,15 @@ class Trader:
         if self._earnings is None:
             self._earnings = live_calendar()
         return self._earnings
+
+    @property
+    def reviewer(self):
+        """The AI reviewer for ai_veto modes, built from GEMINI_API_KEY on first use (None if unset)."""
+        if self._reviewer is _FROM_ENV:
+            from .ai import GeminiReviewer
+
+            self._reviewer = GeminiReviewer.from_env()
+        return self._reviewer
 
     def ledgers(self) -> dict[str, Ledger]:
         return {m: self.ledger(m) for m in self.settings.modes}
@@ -147,9 +161,75 @@ class Trader:
         prev = ledger.latest_plan()
         context, meta = self._earnings_context(ledger, broker, strategy, out)
         result = strategy.decide(closes, self.today, prev["state"] if prev else {}, context)
+        if getattr(strategy, "ai_veto", False):
+            result = self._ai_veto(ledger, broker, strategy, result, closes, meta, out)
         ledger.record_plan(self.today, result.targets, result.state, {**meta, "note": result.note})
         weights = ", ".join(f"{s} {w:.0%}" for s, w in sorted(result.targets.items()))
         out.lines.append(f"plan: {weights} ({result.note})")
+
+    def _ai_veto(self, ledger, broker, strategy, result, closes, meta, out) -> StrategyResult:
+        """Ask the AI about each single stock the plan would newly buy; drop the ones it vetoes.
+
+        Only removes buys (the slot goes to T-bills), never adds or sells anything. Each stock is
+        reviewed once per rebalance period: approvals are remembered in the strategy state.
+        """
+        held = set(ledger.positions())
+        state = dict(result.state)
+        approved = set(state.get("ai_ok", []))
+        todo = [
+            s
+            for s, w in sorted(result.targets.items())
+            if w > 0 and s in strategy.single_stocks and s not in held and s not in approved
+        ]
+        if not todo:
+            return result
+        from .ai import Review, StockBrief
+
+        reasons = meta.get("earnings_reason", {})
+        reviews: list[Review] = []
+        for sym in todo:
+            series = closes.get(sym, [])
+            last = series[-1] if series else None
+            avg50, avg200 = sma(series, 50), sma(series, 200)
+            try:
+                headlines = broker.news(sym, 14)
+            except Exception as exc:  # noqa: BLE001  review without news rather than skip it
+                log.warning("%s: news for %s unavailable: %s", ledger.mode, sym, exc)
+                headlines = []
+            brief = StockBrief(
+                symbol=sym,
+                ret_1m=total_return(series, 21),
+                ret_3m=total_return(series, 63),
+                ret_6m=total_return(series, 126),
+                vs_50d=last / avg50 - 1 if last and avg50 else None,
+                vs_200d=last / avg200 - 1 if last and avg200 else None,
+                earnings=reasons.get(sym, "no report within the next 5 trading days"),
+                headlines=headlines,
+            )
+            reviewer = self.reviewer
+            if reviewer is None:
+                review = Review(sym, "unavailable", 0.0, "GEMINI_API_KEY not set")
+            else:
+                review = reviewer.review(brief)
+            reviews.append(review)
+
+        targets = dict(result.targets)
+        vetoed = [r.symbol for r in reviews if r.vetoed]
+        for sym in vetoed:
+            weight = targets.pop(sym, 0.0)
+            targets[CASH_PROXY] = round(targets.get(CASH_PROXY, 0.0) + weight, 10)
+        if "picks" in state:
+            state["picks"] = [s for s in state["picks"] if s not in vetoed]
+        state["ai_ok"] = sorted(approved | {r.symbol for r in reviews if r.decision == "buy"})
+        meta["ai_reviews"] = [r.to_meta() for r in reviews]
+
+        for r in reviews:
+            tag = {"veto": "AI VETO", "buy": "AI ok", "unavailable": "AI unavailable, rules decide"}
+            tag = tag[r.decision]
+            conf = f" ({r.confidence:.0%})" if r.decision != "unavailable" else ""
+            out.lines.append(f"{tag} {r.symbol}{conf}: {r.reason}")
+        note = result.note + (f"; AI vetoed {', '.join(vetoed)}" if vetoed else "")
+        return StrategyResult(targets, state, note)
 
     def _earnings_context(self, ledger, broker, strategy, out) -> tuple[StrategyContext, dict]:
         singles = sorted(set(strategy.single_stocks))

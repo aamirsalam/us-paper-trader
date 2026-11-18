@@ -22,6 +22,9 @@ create_github_oidc_provider = false
 app_env = {
   FX_SPREAD_PCT      = "0.0075"
   REMITTANCE_FEE_INR = "0"
+  # AI veto: confidence needed to block a buy (default 0.6); pin models if you like, else newest Flash-Lite/Flash.
+  # AI_VETO_CONFIDENCE = "0.6"
+  # GEMINI_MODELS      = "gemini-2.5-flash-lite,gemini-2.5-flash"
   # Your marginal income-tax rate, for the after-tax column (default 0.30).
   # TAX_SLAB_RATE = "0.30"
   # Loss-limit overrides (fractions, or "off"). Defaults are in strategies/__init__.py.

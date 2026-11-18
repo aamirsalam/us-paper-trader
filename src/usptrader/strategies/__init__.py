@@ -176,7 +176,22 @@ class Aggressive(Strategy):
         return StrategyResult(self._targets(picks), {"period": period, "picks": picks}, note)
 
 
-REGISTRY: dict[str, type[Strategy]] = {s.name: s for s in (Baseline, Conservative, Balanced, Aggressive)}
+class AggressiveAI(Aggressive):
+    """Aggressive's rules, plus an AI second opinion that can veto a new single-stock buy.
+
+    Same picks as `aggressive`; when the rules want to buy a stock this mode doesn't hold
+    yet, Gemini reviews recent news, trend and earnings timing and may block it. A vetoed
+    stock's slot sits in SGOV until the next rebalance. ETFs are never reviewed. Runs side
+    by side with `aggressive`, so the difference between the two is the AI's contribution.
+    """
+
+    name = "aggressive-ai"
+    ai_veto = True
+
+
+REGISTRY: dict[str, type[Strategy]] = {
+    s.name: s for s in (Baseline, Conservative, Balanced, Aggressive, AggressiveAI)
+}
 
 
 def get(name: str) -> Strategy:

@@ -22,13 +22,15 @@ locals {
 
   # Modes with a real Alpaca paper account. Virtual modes run on the ledger alone, so they need no keys.
   broker_modes = [for m in var.modes : m if !contains(var.virtual_modes, m)]
+  ai_enabled   = anytrue([for m in var.modes : endswith(m, "-ai")])
 
   # name of env var -> SSM parameter (relative to the tenant prefix)
   secret_params = merge(
     merge([for m in local.broker_modes : {
-      "ALPACA_KEY_ID_${upper(m)}" = "alpaca/${m}/key_id"
-      "ALPACA_SECRET_${upper(m)}" = "alpaca/${m}/secret"
+      "ALPACA_KEY_ID_${replace(upper(m), "-", "_")}" = "alpaca/${m}/key_id"
+      "ALPACA_SECRET_${replace(upper(m), "-", "_")}" = "alpaca/${m}/secret"
     }]...),
+    local.ai_enabled ? { GEMINI_API_KEY = "ai/gemini_api_key" } : {},
     {
       SMTP_USER     = "smtp/user"
       SMTP_PASSWORD = "smtp/password"
