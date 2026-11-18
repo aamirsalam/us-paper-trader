@@ -22,7 +22,17 @@ function Test-Aws([string]$Label, [scriptblock]$Call) {
 
 Write-Host "Account:" -NoNewline
 aws sts get-caller-identity --query "[Account,Arn]" --output text
-if ($LASTEXITCODE -ne 0) { Write-Host "Not signed in. Run: aws login --region $Region"; exit 1 }
+if ($LASTEXITCODE -ne 0) {
+    if ($env:AWS_ACCESS_KEY_ID -or $env:AWS_SESSION_TOKEN) {
+        # Keys exported into this window (export-credentials) override `aws login` and have expired.
+        Write-Host "This window holds expired exported AWS keys, which override 'aws login'. Clear them:" -ForegroundColor Yellow
+        Write-Host '  Remove-Item Env:AWS_ACCESS_KEY_ID, Env:AWS_SECRET_ACCESS_KEY, Env:AWS_SESSION_TOKEN, Env:AWS_CREDENTIAL_EXPIRATION -ErrorAction SilentlyContinue'
+        Write-Host "then run this script again (and 'aws login --region $Region' if it still fails)."
+    } else {
+        Write-Host "Not signed in. Run: aws login --region $Region"
+    }
+    exit 1
+}
 
 # --- networking ------------------------------------------------------------------------------
 $vpcOk = Test-Aws "Create own VPC (dry run)" {
