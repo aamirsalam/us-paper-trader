@@ -187,7 +187,7 @@ Commands are PowerShell on Windows; each script also has a bash twin (`.sh`) whe
 3. **Sign in and check the account's guardrails**
    ```powershell
    aws login --region ap-southeast-2
-   aws configure export-credentials --format powershell | Invoke-Expression   # hands the session to Terraform
+   . .\scripts\aws-session.ps1                    # signs in if needed, hands the session to Terraform
    .\scripts\preflight.ps1
    ```
    Free-plan accounts sit under AWS guardrails that block some actions (GitHub OIDC, sometimes VPCs or
@@ -216,7 +216,7 @@ Commands are PowerShell on Windows; each script also has a bash twin (`.sh`) whe
 8. **Go**: set `schedules_enabled = true` in `terraform.tfvars` and `terraform apply`.
 
 After about a day, set `activate_cost_tag = true` and apply again so the budget can filter on the tag.
-If `aws login` expires mid-setup, sign in again and re-run the `export-credentials` line.
+If Terraform says the token has expired, run `. .\scripts\aws-session.ps1` again: it clears the stale keys, signs in if needed and exports fresh ones.
 
 ## Local use
 
