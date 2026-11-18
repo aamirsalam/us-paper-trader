@@ -149,9 +149,9 @@ How to read it:
 
 | Layer | How |
 |---|---|
-| Terraform | Own root module and state key (`us-paper-trader/prod/terraform.tfstate`) |
-| Network | Own VPC `10.42.0.0/16`, public subnets, no NAT, no inbound, egress 443/587 only |
-| IAM | Every role has a permissions boundary that only allows `us-paper-trader*` resources |
+| Terraform | Own root module and own state file (local by default; `backend_s3.tf.example` moves it to S3) |
+| Network | Own VPC `10.42.0.0/16` (or the default VPC if guardrails require), no NAT; own security group: no inbound, egress 443/587 only |
+| IAM | Role policies scoped to `us-paper-trader*` resources, plus a permissions boundary where the account allows managed policies |
 | Data / secrets | Own DynamoDB table, own SSM path `/us-paper-trader/*`, own log group |
 | Compute | Own ECS cluster and task definition, own scheduler group |
 | Cost | Every resource tagged `project=us-paper-trader`, own budget alarm |
@@ -177,29 +177,43 @@ Don't enable AWS Organizations or IAM Identity Center for this: on the Free plan
 
 ## Setup (once, from your laptop)
 
+Commands are PowerShell on Windows; each script also has a bash twin (`.sh`) where noted.
+
 1. **Alpaca**: sign up (paper-only works from India), then in the dashboard create **three** paper
    accounts (conservative, balanced, aggressive: Alpaca's limit per login) with a **$1,000** balance
    each and generate API keys for each. Baseline needs none.
 2. **Email**: a Gmail app password for the sending account (Google Account → Security → App passwords).
-3. **Terraform**
-   ```bash
-   cd infra/envs/prod
-   cp backend.hcl.example backend.hcl            # state bucket (the NSE one is fine)
-   cp terraform.tfvars.example terraform.tfvars  # alert email, SEC contact, OIDC provider ARN
-   terraform init -backend-config=backend.hcl
-   terraform apply                               # schedules stay DISABLED
+3. **Sign in and check the account's guardrails**
+   ```powershell
+   aws login --region ap-southeast-2
+   aws configure export-credentials --format powershell | Invoke-Expression   # hands the session to Terraform
+   .\scripts\preflight.ps1
+   ```
+   Free-plan accounts sit under AWS guardrails that block some actions (GitHub OIDC, sometimes VPCs or
+   managed IAM policies). The pre-flight dry-runs each one and prints the `terraform.tfvars` switches
+   to set. Nothing it tests is left behind.
+4. **Terraform** (state is a local file in `infra\envs\prod`, git-ignored, like the NSE stack's: back it up)
+   ```powershell
+   cd infra\envs\prod
+   copy terraform.tfvars.example terraform.tfvars  # alert_email, sec_user_agent, switches from step 3
+   terraform init
+   terraform plan                                  # everything should be named us-paper-trader*
+   terraform apply                                 # schedules stay DISABLED
+   cd ..\..\..
    ```
    AWS then emails a subscription confirmation to the alert address: click it, or failure alerts
    won't arrive.
-4. **Image**: in GitHub → Settings → Variables, set `AWS_DEPLOY_ROLE_ARN`
-   (`terraform output -json tenant | jq -r .github_deploy_role_arn`) and `AWS_REGION=ap-southeast-2`,
-   then run the *deploy* workflow.
-5. **Secrets**: `./scripts/put-secrets.sh`
-6. **Smoke test** on a US trading day: `./scripts/run-phase.sh premarket`, then `trade` after 09:30 ET,
-   then `postclose` (you should get the email).
-7. **Go**: set `schedules_enabled = true` in `terraform.tfvars` and `terraform apply`.
+5. **Image**: with Docker Desktop running, `.\scripts\push-image.ps1` (builds linux/arm64, pushes `:live`).
+   If your account allows GitHub OIDC, the *deploy* workflow can do this on every push instead: set
+   repo variables `AWS_DEPLOY_ROLE_ARN` (from `terraform output -json tenant`) and `AWS_REGION`.
+6. **Secrets**: `.\scripts\put-secrets.ps1` (or `put-secrets.sh`). Hidden prompts for each mode's
+   Alpaca key ID and secret, `smtp/user`, `smtp/password` (the app password) and `report/to`.
+7. **Smoke test** on a US trading day: `.\scripts\run-phase.ps1 premarket`, then `trade` while the
+   market is open (8:00 PM–2:30 AM IST until March), then `postclose` (you should get the email).
+8. **Go**: set `schedules_enabled = true` in `terraform.tfvars` and `terraform apply`.
 
 After about a day, set `activate_cost_tag = true` and apply again so the budget can filter on the tag.
+If `aws login` expires mid-setup, sign in again and re-run the `export-credentials` line.
 
 ## Local use
 

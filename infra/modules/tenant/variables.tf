@@ -16,6 +16,18 @@ variable "modes" {
   default     = ["baseline", "conservative", "balanced", "aggressive"]
 }
 
+variable "use_default_vpc" {
+  description = "Run tasks in the account's default VPC instead of creating one (for accounts whose guardrails block VPC creation)."
+  type        = bool
+  default     = false
+}
+
+variable "use_permissions_boundary" {
+  description = "Attach a tenant-scoped permissions boundary to every role. Turn off only if the account's guardrails block iam:CreatePolicy; the role policies are tenant-scoped either way."
+  type        = bool
+  default     = true
+}
+
 variable "virtual_modes" {
   description = "Modes kept on the ledger only, with no Alpaca account (Alpaca allows 3 paper accounts per login)."
   type        = list(string)

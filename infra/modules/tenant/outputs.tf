@@ -11,7 +11,7 @@ output "task_definition_family" {
 }
 
 output "subnet_ids" {
-  value = aws_subnet.public[*].id
+  value = local.subnet_ids
 }
 
 output "task_security_group_id" {

@@ -9,8 +9,12 @@ sec_user_agent = "Your Name you@example.com"
 # Leave false for the first apply. Turn on after secrets are set and a manual run passes.
 schedules_enabled = false
 
-# GitHub OIDC provider: there can only be one per account. If the NSE stack already
-# created it, paste its ARN here; otherwise set create_github_oidc_provider = true.
+# Account guardrails: run .\scripts\preflight.ps1 first; it tells you which of these to flip.
+use_default_vpc          = false # true if creating a VPC is blocked (the NSE stack uses the default VPC)
+use_permissions_boundary = true  # false if creating managed IAM policies is blocked
+
+# GitHub-to-AWS login (OIDC). Leave both off if the account blocks it (free-plan accounts do):
+# push the image from your laptop with .\scripts\push-image.ps1 instead of the deploy workflow.
 github_oidc_provider_arn    = ""
 create_github_oidc_provider = false
 

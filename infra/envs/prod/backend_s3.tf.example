@@ -1,0 +1,6 @@
+# Optional: keep state in S3 instead of the local terraform.tfstate.
+# Copy to backend_s3.tf, fill backend.hcl from backend.hcl.example, then:
+#   terraform init -migrate-state -backend-config=backend.hcl
+terraform {
+  backend "s3" {}
+}

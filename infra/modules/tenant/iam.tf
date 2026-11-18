@@ -5,11 +5,12 @@
 # one of the role policies below can't reach the NSE tenant's table, secrets or logs.
 
 locals {
-  table_arn   = aws_dynamodb_table.ledger.arn
-  log_arn     = "${aws_cloudwatch_log_group.this.arn}:*"
-  repo_arn    = aws_ecr_repository.this.arn
-  taskdef_arn = "arn:${local.partition}:ecs:${local.region}:${local.account}:task-definition/${var.name}"
-  role_prefix = "arn:${local.partition}:iam::${local.account}:role/${var.name}-*"
+  boundary_arn = var.use_permissions_boundary ? aws_iam_policy.boundary[0].arn : null
+  table_arn    = aws_dynamodb_table.ledger.arn
+  log_arn      = "${aws_cloudwatch_log_group.this.arn}:*"
+  repo_arn     = aws_ecr_repository.this.arn
+  taskdef_arn  = "arn:${local.partition}:ecs:${local.region}:${local.account}:task-definition/${var.name}"
+  role_prefix  = "arn:${local.partition}:iam::${local.account}:role/${var.name}-*"
 }
 
 data "aws_iam_policy_document" "boundary" {
@@ -54,6 +55,7 @@ data "aws_iam_policy_document" "boundary" {
 }
 
 resource "aws_iam_policy" "boundary" {
+  count       = var.use_permissions_boundary ? 1 : 0
   name        = "${var.name}-boundary"
   description = "Permissions boundary: ${var.name} roles can only touch ${var.name} resources"
   policy      = data.aws_iam_policy_document.boundary.json
@@ -78,7 +80,7 @@ data "aws_iam_policy_document" "ecs_trust" {
 resource "aws_iam_role" "execution" {
   name                 = "${var.name}-execution"
   assume_role_policy   = data.aws_iam_policy_document.ecs_trust.json
-  permissions_boundary = aws_iam_policy.boundary.arn
+  permissions_boundary = local.boundary_arn
 }
 
 data "aws_iam_policy_document" "execution" {
@@ -110,7 +112,7 @@ resource "aws_iam_role_policy" "execution" {
 resource "aws_iam_role" "task" {
   name                 = "${var.name}-task"
   assume_role_policy   = data.aws_iam_policy_document.ecs_trust.json
-  permissions_boundary = aws_iam_policy.boundary.arn
+  permissions_boundary = local.boundary_arn
 }
 
 data "aws_iam_policy_document" "task" {
@@ -145,7 +147,7 @@ data "aws_iam_policy_document" "scheduler_trust" {
 resource "aws_iam_role" "scheduler" {
   name                 = "${var.name}-scheduler"
   assume_role_policy   = data.aws_iam_policy_document.scheduler_trust.json
-  permissions_boundary = aws_iam_policy.boundary.arn
+  permissions_boundary = local.boundary_arn
 }
 
 data "aws_iam_policy_document" "scheduler" {
@@ -207,7 +209,7 @@ resource "aws_iam_role" "deploy" {
   count                = local.deploy_enable ? 1 : 0
   name                 = "${var.name}-github-deploy"
   assume_role_policy   = data.aws_iam_policy_document.github_trust[0].json
-  permissions_boundary = aws_iam_policy.boundary.arn
+  permissions_boundary = local.boundary_arn
 }
 
 data "aws_iam_policy_document" "deploy" {

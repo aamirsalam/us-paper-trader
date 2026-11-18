@@ -8,9 +8,10 @@ terraform {
     }
   }
 
-  # Partial config: bucket comes from backend.hcl so this tenant's state lives under its own key,
-  # separate from the NSE stack's state. `terraform init -backend-config=backend.hcl`
-  backend "s3" {}
+  # State is a local file (terraform.tfstate here, git-ignored), the same way the NSE stack keeps
+  # its own: separate folder, separate state. Back it up. To move it to S3 later, copy
+  # backend_s3.tf.example to backend_s3.tf, fill backend.hcl, and run
+  # `terraform init -migrate-state -backend-config=backend.hcl`.
 }
 
 provider "aws" {
@@ -30,6 +31,8 @@ module "tenant" {
   source = "../../modules/tenant"
 
   name                        = "us-paper-trader"
+  use_default_vpc             = var.use_default_vpc
+  use_permissions_boundary    = var.use_permissions_boundary
   vpc_cidr                    = var.vpc_cidr
   modes                       = var.modes
   virtual_modes               = var.virtual_modes
@@ -57,6 +60,16 @@ variable "vpc_cidr" {
 variable "modes" {
   type    = list(string)
   default = ["baseline", "conservative", "balanced", "aggressive"]
+}
+
+variable "use_default_vpc" {
+  type    = bool
+  default = false
+}
+
+variable "use_permissions_boundary" {
+  type    = bool
+  default = true
 }
 
 variable "virtual_modes" {

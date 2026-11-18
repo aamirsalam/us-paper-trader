@@ -30,7 +30,7 @@ resource "aws_scheduler_schedule" "phase" {
       Count           = 1
       NetworkConfiguration = {
         AwsvpcConfiguration = {
-          Subnets        = aws_subnet.public[*].id
+          Subnets        = local.subnet_ids
           SecurityGroups = [aws_security_group.task.id]
           AssignPublicIp = "ENABLED"
         }
