@@ -19,13 +19,21 @@ if ($LASTEXITCODE -ne 0 -or -not $token) {
 }
 $token = ($token | Out-String).Trim()
 # Docker warns that --password is less safe than stdin; the token lasts 12 hours and never hits disk or history.
-docker login --username AWS --password $token $registry 2>&1 | Where-Object { $_ -notmatch "Using --password via the CLI is insecure" }
+# Windows PowerShell 5.1 turns anything a native program writes to stderr into a terminating
+# error when the script captures it and ErrorActionPreference is Stop, so relax it for this call.
+$ErrorActionPreference = "Continue"
+$loginOut = & docker login --username AWS --password $token $registry 2>&1
 $loginExit = $LASTEXITCODE
+$ErrorActionPreference = "Stop"
+$loginOut | ForEach-Object { "$_" } | Where-Object { $_ -notmatch "password via the CLI is insecure" } | Write-Host
 Remove-Variable token
 if ($loginExit -ne 0) { throw "docker login to ECR failed (is Docker Desktop running?)" }
 
 # arm64 because the tasks run on Graviton; Docker Desktop emulates it on an Intel/AMD laptop.
+$ErrorActionPreference = "Continue"
 docker buildx build --platform linux/arm64 --provenance=false `
     -t "${repoUrl}:live" -t "${repoUrl}:$sha" --push $root
-if ($LASTEXITCODE -ne 0) { throw "image build or push failed" }
+$buildExit = $LASTEXITCODE
+$ErrorActionPreference = "Stop"
+if ($buildExit -ne 0) { throw "image build or push failed" }
 Write-Host "Pushed ${repoUrl}:live ($sha). The next scheduled or manual run uses it." -ForegroundColor Green
