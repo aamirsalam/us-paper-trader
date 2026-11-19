@@ -174,8 +174,11 @@ def test_no_key_means_rules_decide_and_it_is_reported(tmp_path):
     assert all(r["decision"] == "unavailable" for r in ai["meta"]["ai_reviews"])
     from usptrader.report import build_report
 
-    _, body = build_report(settings, store, MON, outs)
-    assert "AI reviews so far: 3, vetoed 0, ⚠ 3 without AI" in body
+    r = build_report(settings, store, MON, outs)
+    assert "AI: 3 reviewed, 0 vetoed" in r.text
+    assert "aggressive-ai: 3 buys went ahead without the AI (rules decided)" in r.text  # status warning
+    assert "AI unavailable for AVGO, META, NVDA: rules decided" in r.text  # today's events
+    assert "check report" in r.subject
 
 
 def test_ai_mode_defaults_and_env_names(monkeypatch):

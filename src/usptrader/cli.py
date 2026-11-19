@@ -77,8 +77,8 @@ def simulate(settings: Settings, days: int, start: date) -> None:
                 outcomes = trader.run(phase)
             done += 1
         day += timedelta(days=1)
-    subject, body = build_report(settings, store, day - timedelta(days=1), outcomes)
-    print(f"{subject}\n\n{body}")
+    report = build_report(settings, store, day - timedelta(days=1), outcomes)
+    print(f"{report.subject}\n\n{report.text}")
 
 
 def backtest(settings: Settings, args) -> int:
@@ -178,8 +178,7 @@ def main(argv: list[str] | None = None) -> int:
                 "[%s/%s] %s %s", o.mode, o.phase, "ok" if o.ok else "FAILED " + o.error, " | ".join(o.lines)
             )
     if args.command in ("postclose", "report"):
-        subject, body = build_report(settings, store, today, outcomes, ledgers)
-        send(settings, subject, body)
+        send(settings, build_report(settings, store, today, outcomes, ledgers))
     return 0 if all(o.ok for o in outcomes) else 1
 
 

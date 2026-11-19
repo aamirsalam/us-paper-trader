@@ -146,8 +146,8 @@ def test_report_shows_after_tax_column_and_earnings_source(tmp_path):
     outs = []
     for phase in ("premarket", "trade", "postclose"):
         outs = t.run(phase)
-    _, body = build_report(settings, store, MON, outs)
-    assert "after tax %" in body and "after tax ₹" in body
-    assert "earnings dates from: history" in body
-    assert "ledger-only mode" in body  # baseline is virtual by default
-    assert "Form 67" in body
+    r = build_report(settings, store, MON, outs)
+    assert "After tax" in r.text and "After tax" in r.html
+    assert "Earnings dates from: history." in r.text
+    assert "baseline*" in r.text and "* ledger-only" in r.text  # baseline is virtual by default
+    assert "Form 67" in r.text and "Form 67" in r.html

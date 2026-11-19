@@ -77,8 +77,9 @@ def test_one_failing_mode_does_not_stop_others(tmp_path):
     trader, settings, store, brokers = make(tmp_path, modes=("baseline", "nonsense"))
     outs = trader.run("premarket")
     assert outs[0].ok and not outs[1].ok
-    subject, body = build_report(settings, store, MON, outs)
-    assert subject.startswith("⚠")
+    r = build_report(settings, store, MON, outs)
+    assert r.subject.startswith("⚠")
+    assert "nonsense premarket FAILED" in r.text
 
 
 def test_report_shows_inr_breakdown(tmp_path):
@@ -86,8 +87,9 @@ def test_report_shows_inr_breakdown(tmp_path):
     outs = []
     for phase in ("premarket", "trade", "postclose"):
         outs = trader.run(phase)
-    subject, body = build_report(settings, store, MON, outs)
-    assert "baseline" in subject and "₹" in body and "Schedule FA" in body
+    r = build_report(settings, store, MON, outs)
+    assert "all OK" in r.subject and ("leading:" in r.subject or "level so far" in r.subject)
+    assert "₹" in r.text and "Schedule FA" in r.text and "<table" in r.html
 
 
 @mock_aws
